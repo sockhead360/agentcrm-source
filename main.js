@@ -117,6 +117,20 @@ function detectExcludedTypeQuestion(body = '') {
   return null;
 }
 
+// Reply to an excluded-type QUESTION, reading the thread so we never sound like a template
+// swapping one word (the "bot tell"). FIRST decline is the full line; a SECOND excluded-type
+// question in the same thread gets a brief, differently-worded decline with NO repeated pivot
+// (repliesTooSimilar dedup would otherwise suppress a near-identical swap outright). If we've
+// already asked for a property, we drop the redundant "anything off-market?" re-ask.
+function excludedTypeQuestionReply(label, history) {
+  const outbound = (history || []).filter(m => m.direction === 'outbound').map(m => m.body || '');
+  const declinedBefore = outbound.some(b => /\bwe don'?t do\b|\bnone of those\b/i.test(b));
+  const askedBefore = outbound.some(b => /off-?market|address and asking price/i.test(b));
+  if (declinedBefore) return "No, none of those either, just off-market houses that need work.";
+  if (askedBefore) return `No, we don't do ${label}. Just off-market houses that need work.`;
+  return `No, we don't do ${label}. Do you have anything off-market I can look at?`;
+}
+
 // AI read-marking is DISABLED (partner request 2026-07-09): the unread badge (orange count)
 // must reflect every inbound message until a HUMAN opens the thread, regardless of what the
 // AI has seen/handled — someone reviews all threads manually. The only real reader is the
@@ -1573,10 +1587,11 @@ async function generateAiReply(msgBody, history, contact, settings) {
   // offering an excluded property, which cold-closes just below.
   const excludedTypeQ = detectExcludedTypeQuestion(msgBody);
   if (excludedTypeQ) {
-    // NO em dashes, ever — biggest LLM tell. Plain sentences, pivot back to the goal.
+    // NO em dashes, ever (biggest LLM tell). Context-aware so repeated excluded-type
+    // questions don't read as a template swapping one word.
     return {
       category: 'follow_up',
-      reply: `No, we don't do ${excludedTypeQ}. Do you have anything off-market I can look at?`,
+      reply: excludedTypeQuestionReply(excludedTypeQ, history),
       bucket: 'excluded_type_question',
       scheduleHours: null,
     };
