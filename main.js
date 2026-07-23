@@ -1573,9 +1573,10 @@ async function generateAiReply(msgBody, history, contact, settings) {
   // offering an excluded property, which cold-closes just below.
   const excludedTypeQ = detectExcludedTypeQuestion(msgBody);
   if (excludedTypeQ) {
+    // NO em dashes, ever — biggest LLM tell. Plain sentences, pivot back to the goal.
     return {
       category: 'follow_up',
-      reply: `No, we don't do ${excludedTypeQ} — I'm strictly after off-market houses that need work. If something like that comes across your desk, send it my way!`,
+      reply: `No, we don't do ${excludedTypeQ}. Do you have anything off-market I can look at?`,
       bucket: 'excluded_type_question',
       scheduleHours: null,
     };
