@@ -15,7 +15,7 @@ const INSTALLED_APP = '/Applications/AgentCRM.app';
 const ASAR_DEST     = path.join(INSTALLED_APP, 'Contents/Resources/app.asar');
 const ASAR_SRC      = path.join(__dirname, 'dist/mac/AgentCRM.app/Contents/Resources/app.asar');
 const ASAR_TMP      = path.join(require('os').tmpdir(), 'app.asar');
-const GITHUB_REPO   = 'YOUR-GITHUB-USERNAME/YOUR-RELEASES-REPO'; // replace with your own
+const GITHUB_REPO   = 'sockhead360/agentcrm-releases';
 
 // ── 1. Bump patch version ──────────────────────────────────────────────────
 const pkg             = JSON.parse(fs.readFileSync(PKG_PATH, 'utf8'));
@@ -74,3 +74,14 @@ console.log('Relaunching AgentCRM...\n');
 spawnSync('open', [INSTALLED_APP], { stdio: 'ignore', detached: true });
 
 console.log(`✅ AgentCRM v${displayVer} live — locally and on GitHub.\n`);
+
+// ── 8. Sync the public Vercel AI sandbox (non-fatal) ───────────────────────
+// Re-extracts the AI engine from main.js, re-dumps training data, and deploys
+// the standalone demo so it always mirrors the app. A failure here NEVER affects
+// the AgentCRM deploy above — it just warns.
+const SANDBOX_SYNC = '/Users/seymorecash/agentcrm-ai-demo/scripts/sync-engine.js';
+if (fs.existsSync(SANDBOX_SYNC)) {
+  console.log('Syncing public AI sandbox (Vercel)...');
+  const r = spawnSync('node', [SANDBOX_SYNC], { stdio: 'inherit' });
+  if (r.status !== 0) console.warn('⚠ Sandbox sync failed — AgentCRM deploy is fine; run it manually later.\n');
+}
