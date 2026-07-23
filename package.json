@@ -1,6 +1,6 @@
 {
   "name": "agent-crm",
-  "version": "1.1.66",
+  "version": "1.1.383",
   "description": "Real Estate Agent CRM - SMS Outreach Tool",
   "main": "main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "build": {
-    "appId": "com.yourname.agentcrm",
+    "appId": "com.chrisnold.agentcrm",
     "productName": "AgentCRM",
     "icon": "build/icon.icns",
     "mac": {
@@ -47,7 +47,10 @@
       "!release.js",
       "!build.js",
       "!CLAUDE.md",
-      "!_*.asar"
+      "!_*.asar",
+      "!*.db",
+      "!*.db-shm",
+      "!*.db-wal"
     ],
     "asarUnpack": [
       "public/sounds/**"
@@ -56,6 +59,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
+    "@twilio/voice-sdk": "^2.18.3",
     "axios": "^1.7.0",
     "better-sqlite3": "^12.8.0",
     "react": "^19.0.0",
