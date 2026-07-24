@@ -1730,7 +1730,11 @@ async function generateAiReply(msgBody, history, contact, settings) {
   // cover "let's chat"/"let's talk on the phone"/"give me a call" as cold, but the model
   // doesn't apply it consistently to a longer scheduling message (confirmed inconsistent
   // across repeated identical runs). Deterministic, guarded on no address/price present.
-  if (detectCallScheduleNoProperty(msgBody) && !containsStreetAddress(msgBody) && !containsPrice(msgBody)) {
+  // A call request cold-closes ONLY when there is truly no property (we don't burn time on
+  // calls that lead nowhere). But "I do have one, give me a call" IS a property signal — the
+  // _no_property guard must respect that. With a property signaled, fall through to the LLM,
+  // which parks it warm (deflect for the address, or flag 🤝 for a manual call).
+  if (detectCallScheduleNoProperty(msgBody) && !containsStreetAddress(msgBody) && !containsPrice(msgBody) && !CONFIRMED_HAS_PROPERTY_RE.test(msgBody)) {
     return { category: 'not_interested', reply: null, bucket: 'call_schedule_no_property', scheduleHours: null };
   }
 
