@@ -1086,7 +1086,7 @@ const AI_REPLY_DEFAULTS = {
   identity_met:       "I found your info googling agents in the area. Do you have anything off-market I can take a look at?",
   identity_local:     "Yes, I'm a local investor.",
   identity_local_met: "Yes, I'm local. I found your info googling agents in the area. Do you have anything off-market I can take a look at?",
-  wholesaler:       "We fix and flip and wholesale.",
+  wholesaler:       "We are cash buyers who fix and flip, but wholesaling is one of our exit strategies as well.",
   contact_req:      "",
   pof_req:          "We attach our POF to our offer.",
   pof_follow:       "Do you have something I can look at right now?",
@@ -1819,7 +1819,9 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- "Are you in [specific city/area]?" (yes/no form): "Yes." — NEVER name a specific city or state\n` +
     `- Are you local (general): "${r('identity_local')}" — NEVER name a specific city or state\n` +
     `- Are you local + have we met: "${r('identity_local_met')}"\n` +
-    `- Wholesaler / what do you do: "${r('wholesaler')}"\n` +
+    `- CASH BUYER confirmation ("are you a cash buyer?", "are you paying cash?", "cash or financing?", "is this a cash offer?", "you buying with cash?"): reply "Yes. Do you have something off-market I can take a look at?" — just confirm cash and pivot. Do NOT volunteer anything about wholesaling here; NEVER tack on "but we also wholesale." We only bring up wholesaling if THEY bring it up first.\n` +
+    `- WHOLESALER / business model — ONLY when the AGENT raises wholesaling or assigning FIRST ("are you a wholesaler?", "do you wholesale?", "are you assigning?", "are you the end buyer or a wholesaler?", "what do you do with the properties?"): reply "${r('wholesaler')}". Never raise wholesaling unprompted.\n` +
+    `- "ARE YOU GOING TO WHOLESALE THIS?" / "you're not going to wholesale it, are you?" (asking our intent for THIS specific deal): reply "It depends on the deal, that's one of our exit strategies." Honest and brief, no over-explaining.\n` +
     `- Email / contact request: "${r('contact_req')}"\n` +
     `- POF request: "${r('pof_req')}" followed by "${r('pof_follow')}"\n` +
     `- Timeline / timeframe / how soon ("what's your timeline?", "do you have a timeframe?", "when are you looking to buy?", "how soon?", "when do you want to close?", "are you ready to move?"): "${r('timeline')}"\n` +
