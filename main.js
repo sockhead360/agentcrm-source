@@ -1505,22 +1505,11 @@ async function autoSubmitLead(conv, contact, settings) {
     leadLines.push(`Lead #${sub.id} — open app to review`);
 
     if (settings.notifyPhone) {
+      // Single clean lead-info text to your phone (the transcript follow-up was removed
+      // to keep the message thread tidy — the full convo is in the app).
       await twilio.sendSMS(
         settings.accountSid, settings.authToken, settings.phoneNumber,
         settings.notifyPhone, leadLines.join('\n'), settings.messagingServiceSid
-      );
-
-      // SMS #2 — short transcript (last 8 messages)
-      const snippetMsgs = allMsgs.slice(-8);
-      const transcriptLines = [`📋 ${contact.name} (${contact.brokerage || 'agent'}) — convo`];
-      for (const m of snippetMsgs) {
-        const who  = m.direction === 'inbound' ? (contact.first_name || 'Agent') : 'You';
-        const body = m.body.length > 120 ? m.body.slice(0, 117) + '...' : m.body;
-        transcriptLines.push(`${who}: ${body}`);
-      }
-      await twilio.sendSMS(
-        settings.accountSid, settings.authToken, settings.phoneNumber,
-        settings.notifyPhone, transcriptLines.join('\n'), settings.messagingServiceSid
       );
     }
 
