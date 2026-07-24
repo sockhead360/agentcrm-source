@@ -1839,6 +1839,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- Payment / how much do you have to spend: "${r('payment')}"\n` +
     `- Margins / profit: "${r('margins')}"\n` +
     `- Commission: "${r('commission')}"\n` +
+    `- FINDER'S FEE / REFERRAL FEE ("do you pay a finder's fee?", "is there a finder's fee?", "do you pay finders fees?", "what about a referral fee for bringing you a deal?"): reply "Yes, we can and have." (add the off-market pivot if you have not just used it). This is distinct from commission — a fee for bringing us a deal, and the answer is yes.\n` +
     `- What area (and this is the FIRST message from the agent — no prior AI replies in the conversation): send the full criteria blurb "${r('criteria')}" — follow_up. This is their first contact asking what you want; give them the full pitch.\n` +
     `- What area (criteria blurb already sent in a prior turn): "${r('area')}" only — follow_up\n` +
     `- Multiple states / nationwide: "${r('multi_area')}"\n` +
