@@ -1,6 +1,6 @@
 {
   "name": "agent-crm",
-  "version": "1.1.398",
+  "version": "1.1.399",
   "description": "Real Estate Agent CRM - SMS Outreach Tool",
   "main": "main.js",
   "scripts": {
