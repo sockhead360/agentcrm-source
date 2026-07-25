@@ -148,7 +148,7 @@ function aiMarkRead(convId) { try { db.markAiHandled(convId); } catch (_) {} }
 // present/past tense means currently on market (BAD — "it's listed", "listed at $395k",
 // "I have a listing in Cape Coral", "I have a listed 1960s house"). PRE_LISTING_RE wins:
 // any future-tense signal disables the currently-listed read for the message.
-const ON_MARKET_LISTED_RE = /\bi(?:'ve| have| got) (?:one|it|this|that|something|some \w+) listed\b|\bhave (?:a|an) listed\b|\bit'?s (?:currently |already )?listed\b|\blisted (?:on (?:the )?mls|with (?:a|another) (?:agent|realtor|brokerage))\b|\bcurrently listed\b|\blisted (?:for|at) \$?\d|\bi have a listing\b(?!\s+(?:agreement|appointment))|(?<!not )\bmy listing\b(?!\s+(?:agreement|appointment))/i;
+const ON_MARKET_LISTED_RE = /\bi(?:'ve| have| got) (?:one|it|this|that|something|some \w+) listed\b|\bhave (?:a|an) listed\b|\bit'?s (?:currently |already )?listed\b|\blisted (?:on (?:the )?mls|with (?:a|another) (?:agent|realtor|brokerage))\b|\bcurrently listed\b|\blisted (?:for|at) \$?\d|\bi have a listing\b(?!\s+(?:agreement|appointment))|\bmy listing\b(?!\s+(?:agreement|appointment))/i;
 const NOT_LISTED_RE = /\bnot listed\b|\bnever listed\b|\bisn'?t listed\b|\bwasn'?t listed\b|\bno longer listed\b/i;
 const PRE_LISTING_RE = /\bgoing to be listed\b|\bwill be listed\b|\bit will be listed\b|\blisted soon\b|\blisting (?:it |this )?(?:next|this) (?:week|month)\b|\bwill be (?:going )?(?:to|on) (?:the )?market\b|\bgoing (?:to|on) (?:the )?market\b|\bshould go live\b|\bgo(?:es|ing)? live\b|\bhits? the market\b|\babout to (?:list|be listed|hit the market)\b|\bcoming (?:to|on) (?:the )?market\b|\bcoming soon\b|\bcoming up\b|\bcoming (?:next|this) (?:week|month)\b|\bnot listed yet\b|\bbefore (?:it(?:'s| is) |we )?list/i;
 
@@ -157,6 +157,10 @@ const PRE_LISTING_RE = /\bgoing to be listed\b|\bwill be listed\b|\bit will be l
 // hit is almost always a COMP / neighboring sale used to show upside — the subject itself is
 // off-market — so it must NOT be read as on-market.
 const OFF_MARKET_DECLARED_RE = /(?<!not )(?<!isn'?t )(?<!it'?s not )\boff.?market\b|\bpocket listing\b/i;
+// Daisy-chain / wholesale-relay signal — "not my listing but my buddy's wholesaling it".
+// "not my listing" alone still hints on-market (leave it cold); only a relay/wholesale signal
+// means it's another wholesaler's off-market deal being passed along → defer to the LLM.
+const DAISY_RELAY_RE = /\bwholesal(?:ing|er)\b|\bmy (?:buddy|friend|pal|partner|colleague|coworker)\b|another wholesaler|\bnot mine but\b/i;
 function isOnMarketListed(body = '') {
   const b = body || '';
   if (OFF_MARKET_DECLARED_RE.test(b)) return false;
@@ -486,7 +490,9 @@ const OUR_EMAIL_RE = /\b(?:christian\.nold@gmail\.com|transactionsoak@gmail\.com
 function stripUnauthorizedContactInfo(reply, agentMsgBody) {
   if (!reply) return reply;
   let emailMatch = EMAIL_RE.exec(reply);
-  if (emailMatch && OUR_EMAIL_RE.test(emailMatch[0])) emailMatch = null; // our own email is authorized
+  // Our own business email is authorized to share — UNLESS the agent is being hostile. Never
+  // hand personal info to a hostile/abusive contact (their message stays a leak → stripped).
+  if (emailMatch && OUR_EMAIL_RE.test(emailMatch[0]) && !detectHostility(agentMsgBody || '')) emailMatch = null;
   const phoneMatch = PHONE_RE.exec(reply);
   const leakIdx = Math.min(emailMatch ? emailMatch.index : Infinity, phoneMatch ? phoneMatch.index : Infinity);
   if (leakIdx === Infinity) return reply; // no leak
@@ -1602,8 +1608,10 @@ async function generateAiReply(msgBody, history, contact, settings) {
   // Flatly states the property is already listed/on-market — same as any other excluded
   // deal type. The model isn't reliable here on its own (confirmed: it improvised an
   // unrelated clarifying question — "Fixer upper?" — instead of closing cold), so this
-  // skips the API call entirely.
-  if (isOnMarketListed(msgBody)) {
+  // skips the API call entirely. EXCEPTION: a daisy-chain / wholesale-relay ("not my listing
+  // but my buddy's wholesaling it") trips "my listing" but is NOT an on-market listing — it's
+  // another wholesaler's off-market deal being relayed. Defer those to the LLM's daisy-chain rule.
+  if (isOnMarketListed(msgBody) && !DAISY_RELAY_RE.test(msgBody)) {
     return { category: 'not_interested', reply: null, bucket: 'on_market_listed', scheduleHours: null };
   }
 
