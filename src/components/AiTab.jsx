@@ -481,7 +481,7 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
               if (msg.role === 'followup') {
                 // Terminal outcome of the run, not another text. Rendered as a note so the
                 // sandbox actually shows the ending instead of silently running out.
-                if (msg.outcome) {
+                if (msg.outcome || msg.kind === 'cold') {
                   return (
                     <div key={i} style={{ marginBottom: 6 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' }}>
