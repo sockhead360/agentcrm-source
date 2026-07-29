@@ -3065,6 +3065,11 @@ function detectChaseBlocked(convId) {
   } catch (_) { return false; }
 }
 
+// Does the message contain ANY temporal language at all? Used only as a gate on trusting
+// the classifier's scheduleHours (see statedHours). Deliberately broad: it just has to rule
+// out messages with no date content whatsoever, like a bare vetting question.
+const TEMPORAL_HINT_RE = /\b(today|tonight|tomorrow|yesterday|mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|weeks|month|months|year|years|day|days|hour|hours|minute|minutes|min|mins|morning|afternoon|evening|later|soon|shortly|asap|eod|eow|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|holidays|spring|summer|fall|autumn|winter|weekend|\d{1,2}\s*(st|nd|rd|th)\b|\d{1,2}\s*[:\/]\s*\d{1,2})\b/i;
+
 const P2_DEAD_PROPERTY_RE = /\b(?:it|that one|this one|the (?:house|property|one|deal|listing))\s+(?:just\s+|already\s+)?(?:sold|is sold|has sold|went under contract|is gone|is no longer available|got taken)\b|\bno longer (?:have|having) (?:it|that|the (?:house|property|one))\b|\balready sold\b|\bit'?s (?:sold|gone)\b|\bsold it\b|\bwe sold that\b|\boff the table\b|\bnot available (?:anymore|any longer)\b/i;
 
 /**
@@ -3121,9 +3126,17 @@ async function decidePhase2(input) {
   // estimate as the fallback. decidePhase2 previously used the raw parser only, so any
   // phrasing the regexes missed silently became "no timeframe given" and the drip just
   // ploughed ahead on its original schedule.
+  //
+  // CRITICAL GUARD: the classifier attaches scheduleHours for its own reasons (often just
+  // "check back in a day"), NOT only when the agent named a date. Trusting it blindly to
+  // answer "did they give me a timeframe?" made a pure vetting question re-anchor the whole
+  // chase and reply "Perfect, I'll check back then" to "Are you a wholesaler or an actual
+  // buyer?". So the LLM's number is only consulted when the message actually contains
+  // temporal language; it refines HOW LONG, it never decides WHETHER.
   const statedHours = (msg, llm) => {
     const parsed = parseScheduleHours(msg);
     if (parsed !== null) return parsed;
+    if (!TEMPORAL_HINT_RE.test(msg || '')) return null;
     return (llm && typeof llm.scheduleHours === 'number' && llm.scheduleHours > 0) ? llm.scheduleHours : null;
   };
 
