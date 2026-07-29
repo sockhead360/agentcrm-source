@@ -2512,8 +2512,8 @@ function pickDripVariant(convId, usedVariants) {
   return order[0];
 }
 
-function renderDripMessage(variantIdx, missing, contact) {
-  const tpl = DRIP_MESSAGES[variantIdx] || DRIP_MESSAGES[0];
+function renderDripMessage(variantIdx, missing, contact, bank = DRIP_MESSAGES) {
+  const tpl = bank[variantIdx] || bank[0];
   const label = DRIP_MISSING_LABEL[missing] || 'address and asking price';
   const first = (contact && contact.name ? String(contact.name).trim().split(/\s+/)[0] : '') || '';
   // Strip the name slot cleanly when we don't know it, including the comma before it,
@@ -2575,15 +2575,38 @@ const DRIP_PENDING_MESSAGES = [
   "Hey, no rush at all, just let me know if it comes together.",
 ];
 
+// 'status' = the agent has given a concrete REASON they cannot hand over the address or
+// price right now: the property is under contract with someone else, the seller has gone
+// quiet, they're waiting on paperwork. That is different from silence or a side question,
+// and repeating "what's the asking price?" at someone who just explained why they don't
+// have it reads as not listening. So we poll the STATUS instead and let them volunteer
+// the details when the blocker clears. Deliberately generic so one bank covers every
+// blocked situation.
+const DRIP_STATUS_MESSAGES = [
+  "Hey {name}, any updates on this one?",
+  "Just checking in, any movement on that one?",
+  "Hi {name}, where does that one stand now?",
+  "Following up, has anything changed on this one?",
+  "Hey, any news on that property?",
+  "Checking back in, any update on your end?",
+  "Hi {name}, still interested if anything shifts on this one.",
+  "Hey, how is that one coming along?",
+  "Quick check in, anything new on that one?",
+  "Hey {name}, keep me posted if the situation changes on this one.",
+];
+
 // Single entry point for drip copy. Returns { body, variant } so the caller can record
 // which line went out and never repeat it in this conversation.
 function dripBodyFor(missing, contact, convId, usedVariants) {
-  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES : DRIP_MESSAGES;
+  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES
+             : missing === 'status'  ? DRIP_STATUS_MESSAGES
+             : DRIP_MESSAGES;
   const used = new Set(usedVariants || []);
   const order = dripVariantOrder(convId).filter(i => i < bank.length);
   let variant = order.find(i => !used.has(i));
   if (variant === undefined) variant = order[0] ?? 0;
   if (missing === 'pending') return { body: DRIP_PENDING_MESSAGES[variant], variant };
+  if (missing === 'status')  return { body: renderDripMessage(variant, missing, contact, DRIP_STATUS_MESSAGES), variant };
   return { body: renderDripMessage(variant, missing, contact), variant };
 }
 
@@ -2591,10 +2614,12 @@ function dripBodyFor(missing, contact, convId, usedVariants) {
 // simulator rendering readable text without duplicating the selection logic.
 function dripMessage(step, missing) {
   if (step > DRIP_TOTAL_STEPS) return null;
-  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES : DRIP_MESSAGES;
+  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES
+             : missing === 'status'  ? DRIP_STATUS_MESSAGES
+             : DRIP_MESSAGES;
   const tpl = bank[(step - 1) % bank.length];
   if (missing === 'pending') return tpl;
-  return renderDripMessage((step - 1) % DRIP_MESSAGES.length, missing, null);
+  return renderDripMessage((step - 1) % bank.length, missing, null, bank);
 }
 
 // Infer what's missing from the last outbound message we sent in that warm conv.
@@ -2721,7 +2746,7 @@ function dripCascade(missing, firstDelayH) {
       out.push({
         hours: firstDelayH + (step - 1) * 24,
         body,
-        kind: missing === 'pending' ? 'state-poll' : 'drip',
+        kind: (missing === 'pending' || missing === 'status') ? 'state-poll' : 'drip',
       });
     }
   }
@@ -2798,7 +2823,12 @@ async function sendDueWarmDrips(settings) {
       // creation but before this fired, the stored snapshot would be stale and the
       // drip would re-ask for something we already have. 'pending' state-polls aren't
       // about address/price at all (waiting on the listing to exist), so leave those.
-      const missing = drip.missing === 'pending' ? 'pending' : detectMissingHeld(drip.conv_id);
+      // Re-evaluated on EVERY touch, not read from the stored snapshot, so the chase
+      // tracks reality: partial info narrows what we ask for, a stated blocker downgrades
+      // us to a status poll, and a cleared blocker puts us straight back on the details.
+      const missing = drip.missing === 'pending' ? 'pending'
+                    : detectChaseBlocked(drip.conv_id) ? 'status'
+                    : detectMissingHeld(drip.conv_id);
       // Pick a line this agent has not already been sent. The variant is recorded on the
       // row when it goes out, so a restarted drip keeps drawing from what's left.
       const picked = dripBodyFor(missing, contact, drip.conv_id, db.getUsedDripVariants(drip.conv_id));
@@ -2948,6 +2978,33 @@ const P2_PRICE_PENDING_REASON_RE = /still (working|figuring)|working on (it|that
 // listed, i.e. exactly the inventory we want. Real messages like "a lot of properties
 // that just came off the market" are leads, not dead ends, so only "off the table" is
 // treated as terminal here.
+// The agent has given a concrete REASON the address/price cannot come right now. This is
+// categorically different from silence or a side question: they told us what the holdup
+// is, so continuing to ask the same question reads as not listening. The chase stays
+// alive, but switches to a generic status poll ("any updates on this one?") until the
+// blocker clears — at which point the normal detail chase resumes automatically, because
+// this is re-evaluated before every touch.
+// Under contract / pending / contingent lives here rather than in the dead-property rule:
+// those deals fall through constantly and we want to be the standing backup offer.
+const P2_CHASE_BLOCKED_RE = /\b(?:under contract|in contract|is contingent|pending sale|sale pending|(?:is|are) pending|it'?s pending|currently pending)\b|\b(?:accepted|took) an offer\b|\bhas an offer on it\b|\bwaiting (?:on|for) (?:the )?(?:seller|owner|paperwork|listing agreement|probate|attorney|title|bank|court|estate|trustee)\b|\b(?:seller|owner|they) (?:hasn'?t|has not|have not|haven'?t) (?:decided|gotten back|responded|signed|told me|given me)\b|\bcan'?t (?:release|share|give out|send) (?:that|the address|the price|details)\b|\bnot at liberty\b|\b(?:still in|going through) probate\b/i;
+// TENSE IS THE TEST, same principle as the listed/pre-listing rule. "I WAS under contract"
+// and "we HAD it under contract once" are war stories about a finished deal, not a live
+// blocker, and must not mute the detail chase. Neither should a FUTURE intention ("I may
+// be getting one under contract soon") — that agent is about to control a property, which
+// is the opposite of blocked.
+const P2_NOT_BLOCKED_RE = /\b(?:was|were|had|used to be|previously|already been)\b[^.!?]{0,40}\b(?:under contract|in contract|pending)\b|\b(?:may|might|about to|going to|hoping to|trying to|looking to)\b[^.!?]{0,30}\bunder contract\b|\bfell out of contract\b|\bcame back on\b/i;
+function detectChaseBlocked(convId) {
+  try {
+    // Look at the recent inbound side, not just the last message: a blocker stated three
+    // days ago is still in force if nothing has changed since.
+    const inbound = db.getRecentMessages(convId, 12).filter(m => m.direction === 'inbound').slice(-3);
+    return inbound.some(m => {
+      const b = m.body || '';
+      return P2_CHASE_BLOCKED_RE.test(b) && !P2_NOT_BLOCKED_RE.test(b);
+    });
+  } catch (_) { return false; }
+}
+
 const P2_DEAD_PROPERTY_RE = /\b(?:it|that one|this one|the (?:house|property|one|deal|listing))\s+(?:just\s+|already\s+)?(?:sold|is sold|has sold|went under contract|is gone|is no longer available|got taken)\b|\bno longer (?:have|having) (?:it|that|the (?:house|property|one))\b|\balready sold\b|\bit'?s (?:sold|gone)\b|\bsold it\b|\bwe sold that\b|\boff the table\b|\bnot available (?:anymore|any longer)\b/i;
 
 /**
@@ -2979,8 +3036,10 @@ async function decidePhase2(input) {
   // Seller MIA — deal stalled but not dead: brief ack, then park the chase 14 days out
   // and resume the drip from there rather than pestering while the seller is unreachable.
   if (P2_SELLER_MIA_RE.test(message)) {
+    // Status poll, not a detail chase: the holdup is the seller, so asking this agent for
+    // an address and price they cannot get would ignore what they just told us.
     return dec({ kind: 'seller_mia', reply: 'Okay, let me know!', category: 'warm', hours: 336,
-                 dripStep: 1, dripMissing: state.missingForDrip, dripCycle: state.dripCycle || 1 });
+                 dripStep: 1, dripMissing: 'status', dripCycle: state.dripCycle || 1 });
   }
   // Wrong number / wrong person — cold, silent.
   if (P2_WRONG_RE.test(message)) {
