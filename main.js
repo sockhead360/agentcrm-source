@@ -2488,7 +2488,7 @@ const DRIP_LONG_HORIZON_H = 720; // 30 days
 // agent who strings us along for a month still never sees the same sentence twice.
 // {name} is dropped when we have no first name. NO em dashes anywhere in this bank.
 const DRIP_MESSAGES = [
-  "Hey {name}, were you able to grab the {missing}?",
+  "Hey {name}, just checking in about that off-market property, are you able to send me the {missing}?",
   "Just following up. Are you able to send over the {missing}?",
   "Hi {name}, any luck getting the {missing}?",
   "Checking in on this one. Do you have the {missing} yet?",
@@ -2499,7 +2499,7 @@ const DRIP_MESSAGES = [
   "Just checking, did you get the {missing} from the seller?",
   "Hey {name}, send the {missing} whenever you have it and I'll take a look.",
   "Morning {name}, any word on the {missing}?",
-  "Hey, following up on that one. Still need the {missing} if you can grab it.",
+  "Hey, following up on that one. Still need the {missing} whenever you can get it.",
   "Hi, did you ever get the {missing} on that property?",
   "Hey {name}, checking back. Were you able to pull the {missing}?",
   "Following up. Any chance you have the {missing} handy?",
