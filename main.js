@@ -2770,6 +2770,15 @@ function dripCascade(missing, firstDelayH) {
       });
     }
   }
+  // Terminal outcome, not a message: if the agent stays silent through the whole run the
+  // conversation goes cold and parks with no further contact. The sandbox previously just
+  // ran out of touches here and never showed the ending, so it read as if the chase went
+  // on forever. `outcome: true` tells the renderer to draw it as a note, not an SMS.
+  out.push({
+    hours: firstDelayH + (DRIP_TOTAL_STEPS - 1) * 24,
+    kind: 'cold', outcome: true,
+    body: `No reply after ${DRIP_TOTAL_STEPS} follow-ups. Moved to cold and parked, no further messages. Only a reply from the agent can revive it.`,
+  });
   return out;
 }
 

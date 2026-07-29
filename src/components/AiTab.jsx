@@ -162,7 +162,10 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
     const agentMsg = { role: 'agent', body: msg };
     // Agent turns, AI replies, AND any fast-forwarded follow-ups all count as conversation
     // history (the follow-ups are treated as sent outbound messages the agent is replying to).
-    const convTurns = sandboxHistory.filter(m => m.role === 'agent' || m.role === 'crm' || m.role === 'followup');
+    // `outcome` entries are notes about what the system DID (went cold), not messages that
+    // were ever texted, so they must stay out of the history the classifier sees.
+    const convTurns = sandboxHistory.filter(m =>
+      !m.outcome && (m.role === 'agent' || m.role === 'crm' || m.role === 'followup'));
     setSandboxHistory(h => [...h, agentMsg]);
     try {
       const allHistory = [...convTurns, agentMsg];
@@ -205,7 +208,7 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
   const handleFastForward = () => {
     if (!pendingFollowUps.length) return;
     const [next, ...rest] = pendingFollowUps;
-    setSandboxHistory(h => [...h, { role: 'followup', body: next.body, hours: next.hours, kind: next.kind }]);
+    setSandboxHistory(h => [...h, { role: 'followup', body: next.body, hours: next.hours, kind: next.kind, outcome: next.outcome }]);
     setPendingFollowUps(rest);
   };
 
@@ -476,6 +479,24 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
                 );
               }
               if (msg.role === 'followup') {
+                // Terminal outcome of the run, not another text. Rendered as a note so the
+                // sandbox actually shows the ending instead of silently running out.
+                if (msg.outcome) {
+                  return (
+                    <div key={i} style={{ marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' }}>
+                        <div style={{ flex: 1, height: 1, background: 'var(--border-sh)' }} />
+                        <span style={{ fontSize: 9, fontFamily: 'var(--font-ui)', fontWeight: 'bold', color: '#6a6a8a', background: 'var(--bg3)', padding: '1px 6px', border: '1px solid #44446a', whiteSpace: 'nowrap' }}>
+                          🧊 CONVERSATION CLOSED
+                        </span>
+                        <div style={{ flex: 1, height: 1, background: 'var(--border-sh)' }} />
+                      </div>
+                      <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: '#8a8aa0', padding: '3px 6px', border: '1px solid var(--border-sh)', background: 'var(--bg3)' }}>
+                        {msg.body}
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div key={i} style={{ marginBottom: 6 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' }}>
@@ -568,10 +589,14 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
           {pendingFollowUps.length > 0 && (
             <div style={{ padding: '6px 8px', borderTop: '1px solid var(--border-sh)', background: 'var(--bg2)', display: 'flex', alignItems: 'center', gap: 8 }}>
               <button className="aim-btn" onClick={handleFastForward} disabled={sandboxLoading} style={{ flexShrink: 0 }}>
-                <span className="aim-btn-label">⏩ Fast-forward to next follow-up</span>
+                <span className="aim-btn-label">
+                  {pendingFollowUps[0].outcome ? '⏩ See how it ends' : '⏩ Fast-forward to next follow-up'}
+                </span>
               </button>
               <span style={{ fontSize: 10, color: '#996600', fontFamily: 'var(--font-ui)' }}>
-                next lands {fmtHoursLater(pendingFollowUps[0].hours)} · {pendingFollowUps.length} left if they stay silent
+                {pendingFollowUps[0].outcome
+                  ? 'last step: what happens if they never reply'
+                  : `next lands ${fmtHoursLater(pendingFollowUps[0].hours)} · ${pendingFollowUps.filter(f => !f.outcome).length} message${pendingFollowUps.filter(f => !f.outcome).length === 1 ? '' : 's'} left if they stay silent`}
               </span>
             </div>
           )}
