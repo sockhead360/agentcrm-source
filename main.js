@@ -1874,7 +1874,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- Why off-market: "${r('why_offmarket')}"\n` +
     `- Agent confirms they have a property BUT asks for a phone/Zoom call ("give me a call", "call me", "let's hop on a call", "can we talk?"): skip any "I prefer text" language — reply directly with "${r('signal')}" — warm. NEVER say "I prefer text."\n` +
     `- Agent presses a second time for a phone call after already receiving the address/price ask: warm, reply=null (just park it)\n` +
-    `- SELLER MIA / DEAL FROZEN: agent says the seller has gone quiet, disappeared, isn't responding, or the deal is stalled waiting on the seller — even with a property in play ("seller fell off the face of the earth", "seller isn't responding", "can't reach the seller", "seller went dark", "seller disappeared", "seller is MIA", "haven't heard back from the seller", "waiting to hear back from seller", "seller ghosted", "seller is being difficult", "deal fell through", "fell through", "seller backed out") — ESPECIALLY when paired with "I'll let you know", "I'll reach out when", "if he resurfaces", "if anything changes", "I'll keep you posted" → send a brief acknowledgment only ("Okay, no worries! Keep me posted." or "Sounds good, let me know if he resurfaces."), follow_up, scheduleHours=null. Do NOT ask for address or price — the deal is frozen and pushing would be tone-deaf.\n` +
+    `- SELLER MIA / DEAL FROZEN: agent says the seller has gone quiet, disappeared, isn't responding, or the deal is stalled waiting on the seller — even with a property in play ("seller fell off the face of the earth", "seller isn't responding", "can't reach the seller", "seller went dark", "seller disappeared", "seller is MIA", "haven't heard back from the seller", "waiting to hear back from seller", "seller ghosted", "seller is being difficult", "deal fell through", "fell through", "seller backed out") — ESPECIALLY when paired with "I'll let you know", "I'll reach out when", "if he resurfaces", "if anything changes", "I'll keep you posted" → send a brief acknowledgment only ("Okay, no worries! Keep me posted." or "Sounds good, let me know if he resurfaces."). Do NOT ask for address or price right now — the deal is frozen and pushing would be tone-deaf. CATEGORY DEPENDS ON WHETHER A PROPERTY EXISTS: if a specific property IS in play (they have one, the seller just went quiet on it) → warm, scheduleHours=336. The property is real, so we stay on it and check back in about two weeks; the system backs the chase off and asks about status and timing rather than demanding details they cannot get. Only when there is NO property behind it (the deal collapsed entirely and nothing remains) → follow_up, scheduleHours=null.\n` +
     `- UNFULFILLABLE GATE (narrow exception — precondition you cannot do over text): agent demands you sign a buyer-broker agreement (BBA)/representation/agency agreement/NDA/non-disclosure agreement/any agreement, send an email, provide ID verification / identity verification, name a title company, pay an upfront payment / retainer / deposit / fee to release the info, or get on a phone/Zoom call to "verify you're a real buyer" BEFORE they share the address. NOTE on money demands: a request for an upfront payment/retainer/deposit before you can even see the address is a red flag — never agree to pay upfront; legitimate deals don't require it. HANDLING DEPENDS ON WHETHER A PROPERTY IS IN PLAY:\n` +
     `    • DEAL IN PLAY (they've signaled a specific property/price/inventory somewhere in the conversation): NEVER agree to sign anything, never promise to email or call. Make at most ONE brief attempt to get the address anyway ("What's the address? I'll take a look."). Do NOT repeat that ask if they push back — repeating burns the agent. If they insist a second time, set reply=null (send NOTHING) → warm (a human takes over from there). SPECIAL CASE — BBA on a clear fixer: we avoid BBAs, but if the agent has CLEARLY signaled they have a fixer-upper and a signed BBA is the ONLY thing standing between us and the property info, this is exactly the case to flag for a human — park warm 🤝 (reply=null after the one attempt) so a person can take over and handle the property-specific BBA. Do NOT cold-close it.\n` +
     `    • NO PROPERTY SIGNALED (they're demanding ID/title/BBA/POF/an email/a call with NO property named — e.g. "I need ID verification and to know what title company you're using", "email me your info to get added to my buyer list"): this is not a real deal, so do NOT park it warm and do NOT keep chasing. If the message is plainly just process/onboarding demands → not_interested, reply=null. If it's BORDERLINE — they sound cooperative and MIGHT have something but it's unclear — send exactly ONE probe: "I'm happy to send all of that info over to you but first can I ask if you have an off-market fixer upper I can look at?" → follow_up (NOT warm), scheduleHours=null. If they answer that with no property, cold.\n` +
@@ -2759,6 +2759,18 @@ function missingFromMessages(msgs) {
   if (haveAddr && havePrice)  return 'price';
   return 'both';
 }
+// Array-based mirror of detectChaseBlocked (which reads the live DB). Without this the
+// sandbox planner showed a daily detail chase for an under-contract or pre-listing thread
+// while production would actually send the backed-off status poll — the simulator telling
+// you the opposite of what the agent would receive.
+function chaseBlockedFromMessages(msgs) {
+  return (msgs || []).filter(m => m.direction === 'inbound').slice(-3).some(m => chaseIsBlocked(m.body || ''));
+}
+// What the drip would actually chase for this transcript: a stated blocker outranks the
+// address/price gap, exactly as sendDueWarmDrips recomputes it before every touch.
+function chaseModeFromMessages(msgs) {
+  return chaseBlockedFromMessages(msgs) ? 'status' : missingFromMessages(msgs);
+}
 function followUpBodyFromMessages(msgs) {
   const { haveAddr, havePrice } = heldFromMessages(msgs);
   if (!haveAddr && !havePrice) return pickVariation('both');
@@ -2808,13 +2820,13 @@ function planFollowUps(result, fullMsgs) {
   if (result.preserveFollowUps) return []; // an existing pending schedule is left untouched, not replaced
   if (bucket === 'pending_state_poll') return dripCascade('pending', 72);
   if (bucket === 'timeframe_deferral' && result.scheduleHours) {
-    return dripCascade(missingFromMessages(fullMsgs), result.scheduleHours);
+    return dripCascade(chaseModeFromMessages(fullMsgs), result.scheduleHours);
   }
   // A stated timeframe on a warm thread DELAYS the run rather than replacing it: the
   // 10 days start at the promised moment. follow_up means no property signal, so it is
   // never chased regardless of any hours the classifier attached.
   if (cat === 'warm') {
-    return dripCascade(missingFromMessages(fullMsgs), result.scheduleHours || 24);
+    return dripCascade(chaseModeFromMessages(fullMsgs), result.scheduleHours || 24);
   }
   return []; // cold / hot / follow_up → nothing scheduled
 }
@@ -3030,22 +3042,26 @@ const P2_PRICE_PENDING_REASON_RE = /still (working|figuring)|working on (it|that
 // this is re-evaluated before every touch.
 // Under contract / pending / contingent lives here rather than in the dead-property rule:
 // those deals fall through constantly and we want to be the standing backup offer.
-const P2_CHASE_BLOCKED_RE = /\b(?:under contract|in contract|is contingent|pending sale|sale pending|(?:is|are) pending|it'?s pending|currently pending)\b|\b(?:accepted|took) an offer\b|\bhas an offer on it\b|\bwaiting (?:on|for) (?:the )?(?:seller|owner|paperwork|listing agreement|probate|attorney|title|bank|court|estate|trustee)\b|\b(?:seller|owner|they) (?:hasn'?t|has not|have not|haven'?t) (?:decided|gotten back|responded|signed|told me|given me)\b|\bcan'?t (?:release|share|give out|send) (?:that|the address|the price|details)\b|\bnot at liberty\b|\b(?:still in|going through) probate\b/i;
+const P2_CHASE_BLOCKED_RE = /\b(?:under contract|in contract|is contingent|pending sale|sale pending|(?:is|are) pending|it'?s pending|currently pending)\b|\b(?:accepted|took) an offer\b|\bhas an offer on it\b|\bwaiting (?:on|for) (?:the )?(?:seller|owner|paperwork|listing agreement|probate|attorney|title|bank|court|estate|trustee)\b|\b(?:seller|owner|they) (?:hasn'?t|has not|have not|haven'?t) (?:decided|gotten back|responded|signed|told me|given me)\b|\bcan'?t (?:release|share|give out|send) (?:that|the address|the price|details)\b|\bnot at liberty\b|\b(?:still in|going through) probate\b|\b(?:seller|owner|they|he|she) (?:has |have |is |are )?(?:gone |went )?(?:dark|mia|ghosted|unresponsive|quiet)\b|\b(?:can'?t|cannot|unable to) (?:reach|get (?:a )?hold of|get ahold of) (?:the )?(?:seller|owner|them)\b|\b(?:seller|owner|they) (?:isn'?t|aren'?t|is not|are not) responding\b|\bhaven'?t heard back from (?:the )?(?:seller|owner)\b/i;
 // TENSE IS THE TEST, same principle as the listed/pre-listing rule. "I WAS under contract"
 // and "we HAD it under contract once" are war stories about a finished deal, not a live
 // blocker, and must not mute the detail chase. Neither should a FUTURE intention ("I may
 // be getting one under contract soon") — that agent is about to control a property, which
 // is the opposite of blocked.
 const P2_NOT_BLOCKED_RE = /\b(?:was|were|had|used to be|previously|already been)\b[^.!?]{0,40}\b(?:under contract|in contract|pending)\b|\b(?:may|might|about to|going to|hoping to|trying to|looking to)\b[^.!?]{0,30}\bunder contract\b|\bfell out of contract\b|\bcame back on\b/i;
+// A seller who has gone quiet is the canonical out-of-their-control case, so P2_SELLER_MIA_RE
+// counts as blocked too. Without it "the seller went dark on me" kept getting the daily
+// detail chase, demanding an address from an agent who just told us they cannot reach anyone.
+function chaseIsBlocked(body = '') {
+  if (P2_NOT_BLOCKED_RE.test(body)) return false;
+  return P2_CHASE_BLOCKED_RE.test(body) || P2_SELLER_MIA_RE.test(body);
+}
 function detectChaseBlocked(convId) {
   try {
     // Look at the recent inbound side, not just the last message: a blocker stated three
     // days ago is still in force if nothing has changed since.
     const inbound = db.getRecentMessages(convId, 12).filter(m => m.direction === 'inbound').slice(-3);
-    return inbound.some(m => {
-      const b = m.body || '';
-      return P2_CHASE_BLOCKED_RE.test(b) && !P2_NOT_BLOCKED_RE.test(b);
-    });
+    return inbound.some(m => chaseIsBlocked(m.body || ''));
   } catch (_) { return false; }
 }
 
