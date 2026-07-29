@@ -14,6 +14,20 @@ function normalizePhone(raw) {
   return null;
 }
 
+// Translate low-level DNS/connectivity failures into a plain-English message.
+// These mean the request never reached Twilio — it's a local internet problem,
+// not a bad credential or a Twilio outage. Returns null if it's not a network error.
+function friendlyNetworkError(e) {
+  const code = e && e.code;
+  const NET_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH'];
+  // axios may nest the code, or only set ECONNABORTED on a timeout
+  const isTimeout = code === 'ECONNABORTED' || /timeout/i.test(e?.message || '');
+  if (NET_CODES.includes(code) || isTimeout) {
+    return new Error("No internet connection — couldn't reach Twilio. Check your Wi-Fi/network and try again.");
+  }
+  return null;
+}
+
 function makeClient(accountSid, authToken) {
   return axios.create({
     baseURL: `https://api.twilio.com/2010-04-01/Accounts/${accountSid}`,
@@ -36,8 +50,17 @@ async function sendSMS(accountSid, authToken, fromNumber, toNumber, body, messag
   for (const url of (mediaUrls || []).slice(0, 10)) {
     params.append('MediaUrl', url);
   }
-  const response = await client.post('/Messages.json', params.toString());
-  return response.data;
+  try {
+    const response = await client.post('/Messages.json', params.toString());
+    return response.data;
+  } catch (e) {
+    const netErr = friendlyNetworkError(e);
+    if (netErr) throw netErr;
+    // Surface Twilio's own error message when it actually responded
+    const twilioMsg = e.response?.data?.message;
+    if (twilioMsg) throw new Error(`Twilio rejected the message: ${twilioMsg}`);
+    throw e;
+  }
 }
 
 // Upload a local image and return a public URL for Twilio MMS.

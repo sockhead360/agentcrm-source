@@ -723,7 +723,7 @@ td.muted { color: var(--win-dark); }
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 6px 2px 14px;
+  padding: 2px 6px 2px 4px;
   cursor: pointer;
   font-size: 11px;
   color: var(--win-black);
@@ -733,7 +733,14 @@ td.muted { color: var(--win-dark); }
 .buddy-item:hover { background: #e8e4dc; }
 .buddy-item.active { background: var(--sel-bg); color: var(--sel-text); }
 
-.buddy-icon { font-size: 12px; flex-shrink: 0; }
+.buddy-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .buddy-info { flex: 1; overflow: hidden; }
 .buddy-name { font-size: 11px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -759,6 +766,7 @@ td.muted { color: var(--win-dark); }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
   border: 2px solid;
   border-top-color: var(--border-sh);
   border-left-color: var(--border-sh);
@@ -937,7 +945,7 @@ td.muted { color: var(--win-dark); }
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  padding: 3px 4px;
+  padding: 3px 2px;
   font-size: 10px;
   font-family: var(--font-ui);
   cursor: pointer;
@@ -962,9 +970,9 @@ td.muted { color: var(--win-dark); }
   border-bottom-color: var(--border-hi);
 }
 
-.aim-btn-icon { font-size: 16px; flex-shrink: 0; }
+.aim-btn-icon { font-size: 15px; flex-shrink: 0; }
 
-.aim-btn-label { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.aim-btn-label { font-size: 9px; letter-spacing: -0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
 .aim-send-btn {
   margin-left: auto;
@@ -1323,3 +1331,16 @@ td.muted { color: var(--win-dark); }
 .w-full { width: 100%; }
 .bold { font-weight: bold; }
 .text-muted { color: var(--win-dark); }
+
+/* AIM call popup - animated dots */
+@keyframes aimDot {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+.aim-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: aimDot 1.2s ease-in-out infinite;
+  opacity: 0.25;
+}

@@ -43,6 +43,25 @@ export default function LeadsTab() {
     else setContacts([]);
   }, [selectedList]);
 
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      if (confirmDelete || confirmReset) return;
+      e.preventDefault();
+      if (!lists.length) return;
+      const idx = lists.findIndex(l => l.id === selectedList?.id);
+      const next = e.key === 'ArrowDown'
+        ? lists[idx < lists.length - 1 ? idx + 1 : 0]
+        : lists[idx > 0 ? idx - 1 : lists.length - 1];
+      setSelectedList(next);
+      requestAnimationFrame(() => document.querySelector('.list-item.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedList, lists, confirmDelete, confirmReset]);
+
   const handleDeleteList = async () => {
     const list = confirmDelete;
     setConfirmDelete(null);

@@ -32,6 +32,25 @@ export default function NotesTab() {
     setCopied(false);
   };
 
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      if (editing || showNew) return;
+      e.preventDefault();
+      if (!displayNotes.length) return;
+      const idx = displayNotes.findIndex(n => n.id === selected?.id);
+      const next = e.key === 'ArrowDown'
+        ? displayNotes[idx < displayNotes.length - 1 ? idx + 1 : 0]
+        : displayNotes[idx > 0 ? idx - 1 : displayNotes.length - 1];
+      handleSelect(next);
+      requestAnimationFrame(() => document.querySelector('.campaign-item.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, displayNotes, editing, showNew]);
+
   const handleCopy = async () => {
     if (!selected) return;
     navigator.clipboard.writeText(selected.body).then(async () => {

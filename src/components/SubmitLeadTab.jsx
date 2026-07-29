@@ -82,6 +82,24 @@ export default function SubmitLeadTab() {
     });
   }, []);
 
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      e.preventDefault();
+      if (!submissions.length) return;
+      const idx = submissions.findIndex(s => s.id === activeId);
+      const next = e.key === 'ArrowDown'
+        ? submissions[idx < submissions.length - 1 ? idx + 1 : 0]
+        : submissions[idx > 0 ? idx - 1 : submissions.length - 1];
+      activateSubmission(next);
+      requestAnimationFrame(() => document.querySelector('.campaign-item.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activeId, submissions]);
+
   const activateSubmission = (sub) => {
     setActiveId(sub.id);
     setErrors({});

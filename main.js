@@ -1794,7 +1794,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `CATEGORIES:\n` +
     `- hot_lead: agent has a property AND conversation contains both a street address AND asking price AND the property is off-market. Set reply=null — a separate system handles all hot_lead messaging automatically. CRITICAL: if the agent explicitly states the property is currently listed, on the MLS, on market, or "not off-market" — it is NOT a hot_lead regardless of whether address and price are present. Listed/MLS properties = not_interested, reply=null. PRE-LISTING EXCEPTION — TENSE IS THE TEST: FUTURE-tense listing language means the property is NOT YET on market, i.e. it is off-market RIGHT NOW and exactly what we buy: "will be listed", "it will be listed at/in X", "going to be listed", "listed soon", "listing it next week", "will be going to market", "should go live", "goes live July 1st", "coming on the market", "coming to the market", "coming to market", "coming soon", "about to hit the market", "signing the listing agreement", "signed the listing agreement", "listing agreement soon", "taking a listing" — if address and price are present this IS a hot_lead. A listing agreement signing is the pre-market window. Only PRESENT/PAST tense means currently listed ("it's listed", "listed at $395k", "I have a listing in Cape Coral", "I have one listed") = not_interested. NEVER read "will be listed" as on-market — it is the opposite. Add "coming up", "coming up next week", "coming up soon", "have one coming up" to the FUTURE-tense/pre-listing list. BOTH-SIGNALS TIE-BREAKER (important): if a SINGLE message contains BOTH a coming-up / coming-soon / pre-listing signal AND a "listed at $X" phrase (e.g. "a 2/2 fixer upper coming up next week listed at 25k"), LEAN PRE-LISTING / OFF-MARKET — the "$X" is the intended asking/list price for a property that is NOT on the market yet, not evidence of a current listing. Pursue it: hot_lead if a street address is also present, otherwise warm and ask for the address. Do NOT cold-close a message just because it says "listed at $X" when a coming-up/coming-soon signal is also present.\n` +
     `- warm: agent signals they have a specific property but address or price is still missing. Includes land/acreage listings, new construction, pre-foreclosures, over-budget price ($2.5M, $3M etc.), price reduction announcements ("$30k price reduction"), seller incentive mentions ("closing costs paid", "seller credit") — do NOT cold-close based on property type, price, or marketing language; ask for address/price and let the human decide. The buyer decides whether to pursue, not the AI. CRITICAL: warm ALWAYS has a reply — never return warm with reply=null unless address AND price are both already known. If property signal exists but address is missing, ALWAYS send the address/price request. NOTE: pre-foreclosure = warm. Foreclosure/REO/bank-owned/short sale/FSBO (for sale by owner) = not_interested. CRITICAL GATE — warm REQUIRES a property signal: warm means the agent has, knows of, or will soon have a SPECIFIC property. An agent who is only vetting you (asking your identity, criteria, budget, financing, entity name, buyer type — "are you local?", "are you a wholesaler or direct?", "what's your buyer entity?", "any specific year built?", "cash or loan?") or merely acknowledging ("nice, ok perfect", "thanks I'll work on it", "sounds good") has given NO property signal — that is follow_up, NOT warm, no matter how engaged or how many questions they ask. Only classify warm once an actual property/lead has surfaced somewhere in the conversation.\n` +
-    `- follow_up: agent engaging but no property signal yet — asking who you are, what your criteria/budget/financing/entity is, what buyer type you are, or acknowledging your answers. Answer their question naturally and helpfully (per the phrasings below), but this is follow_up: no follow-up drip, no timed nudge, no 🤝 park. There is nothing to chase until they reveal a property. Set scheduleHours=null for these pure-vetting/acknowledgment exchanges.\n` +
+    `- follow_up: agent engaging but no property signal yet — asking who you are, what your criteria/budget/financing/entity is, what buyer type you are, or acknowledging your answers. Answer their question naturally and helpfully (per the phrasings below), but this is follow_up: no follow-up drip, no timed nudge, no 🤝 park. There is nothing to chase until they reveal a property. Set scheduleHours=null for these pure-vetting/acknowledgment exchanges. THE DIVIDING LINE: the moment a property enters the picture — they have one, they are getting one, they will have one soon, they are going to go find out a detail about one — it is warm, not follow_up, even when they also give you a date. follow_up is reserved for exchanges where no property exists anywhere in the conversation.\n` +
     `- not_interested: find-for-you offer, buyer-agent promo, refusal, wrong type, hostility. A pure call request with no property signal ("can I give you a call?", "could I call you?", "give me a call", "can we hop on a call?") and NO indication of a specific property IS not_interested — reply=null. EXCEPTION: if the agent has already confirmed they have a specific property in this conversation AND is asking to call to discuss it, see call request rule below.\n\n` +
     `NOT_INTERESTED ALWAYS SILENT: not_interested ALWAYS means reply=null with no exceptions. No polite farewells, no "thanks for getting back to me", no "let me know if anything changes", no "sounds good". Just silent cold. Going cold is already the right outcome — there is nothing to say.\n\n` +
     `CRITICAL RULE — not_interested with reply=null: if the message contains ONLY a find-for-you offer ("I can find you one", "I can certainly check for you", "let me see what's out there", "I'll add you to a list/search") OR buyer-agent self-promotion ("I'm your man", "top 1%", "I specialize in helping investors find deals") with no genuine criteria questions → not_interested, null reply.\n` +
@@ -1816,7 +1816,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `  Ask 3 (the ballpark) — we've asked twice and still no number: reply "Do you have a ballpark range?" → warm.\n` +
     `  THEN — only after all 3 asks, if they STILL refuse or give no number ("no", "no range", any make-an-offer phrase, "you tell me", "no idea", "whatever you think", "just offer something"): reply=null → hot_lead. This is the ONLY situation where we proceed without a price, and ONLY after all 3 asks — never sooner.\n` +
     `  EXCEPTION — PRICE GENUINELY DOESN'T EXIST YET (ballpark, then timeline, NEVER hot): if the agent gives a REASON the price doesn't exist yet — "we're still working on that part", "I'll ask the seller", "seller hasn't said", "I need to check", "don't know yet", "they haven't told me", "I'll find out", "let me check with them" — do NOT run the 3-ask make-offer sequence and NEVER go hot on this path (pushing when they literally don't have a number is inappropriate). Instead, exactly two gentle steps: (STEP A) ask ONCE for a rough number — "Okay, do you have a ballpark range?" → warm. (STEP B) if they still have no number (they repeat that they don't know / are waiting / say "no") — stop asking about price entirely and ask the TIMING question so we know when to check back: "No worries. When do you think you'll have it?" → warm (or follow_up), and set scheduleHours from their answer. If they give a rough range at STEP A, that's a real number → proceed normally. This is different from a comp/deflection (a price that exists but they won't say), which we push with the 3-ask sequence.\n\n` +
-    `AGENT DOESN'T KNOW THE PRICE (distinct from make-an-offer): if we already asked for the asking price and the agent says they genuinely DON'T KNOW it — "idk", "I don't know", "not sure", "no idea", "couldn't tell you", "beats me", "I'd have to ask", "I'd have to check", "the seller hasn't said", "no price yet", "they haven't told me", "I just know it needs work/repairs" — do NOT ask "what's the asking price?" again in any wording. They already told you they don't know; repeating it burns them. Instead ask ONCE if they can find out: "No worries, can you find out and let me know?" → warm. THEN if they say they'll ask/check/find out ("I'll ask them", "I'll try to ask", "let me check", "I'll find out", "I'll see") → reply=null, follow_up, scheduleHours=48 (wait for them to come back with it). If you have ALREADY asked them to find out once in a prior turn, do NOT ask again — reply=null. Never send the price question and the find-out question more than once each.\n\n` +
+    `AGENT DOESN'T KNOW THE PRICE (distinct from make-an-offer): if we already asked for the asking price and the agent says they genuinely DON'T KNOW it — "idk", "I don't know", "not sure", "no idea", "couldn't tell you", "beats me", "I'd have to ask", "I'd have to check", "the seller hasn't said", "no price yet", "they haven't told me", "I just know it needs work/repairs" — do NOT ask "what's the asking price?" again in any wording. They already told you they don't know; repeating it burns them. Instead ask ONCE if they can find out: "No worries, can you find out and let me know?" → warm. THEN if they say they'll ask/check/find out ("I'll ask them", "I'll try to ask", "let me check", "I'll find out", "I'll see") → reply=null, warm, scheduleHours=48 (a property is in play and they are going to get the number, so this stays warm and the follow-up chase is simply delayed until then). If you have ALREADY asked them to find out once in a prior turn, do NOT ask again — reply=null. Never send the price question and the find-out question more than once each.\n\n` +
     `NOT-DIRECT / SPECULATIVE SIGNAL — two tiers:\n` +
     `  TIER 1 — SOFT / AMBIGUOUS (hints they may not control it, but not explicitly stated): "I drove past a house that needs work", "I saw one", "there's a house on X that looks vacant", "I'm going to try to get them to sell", "I'll reach out to the owner", "if I can get it", "I'm going to approach them". Ask ONCE naturally: "Are you direct with the seller or the agent on this one?" → warm. One soft ask, then proceed normally.\n` +
     `  TIER 2 — EXPLICIT / CONFIRMED (agent clearly states they do NOT have/control the listing): "I don't have the listing", "I'd have to get it signed", "not my listing", "would have to reach out to the owner", "I'd have to get them to sign", "I don't represent them". No asking price exists yet — the agent hasn't landed the listing. Classify as follow_up (NOT warm — no active deal to chase). Reply exactly: "No worries, reach out when you have it lined up." Do NOT ask for address or price — those don't exist yet.\n\n` +
@@ -1883,8 +1883,8 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- Agent repeats a short-term delay they already stated ("In an hour", "Give me an hour", "One hour") when the address/details have ALREADY been requested in this conversation → reply=null (do NOT ask again), warm, scheduleHours=4. They already committed — just wait.\n` +
     `- Agent confirms they HAVE something AND says they will send the info/details soon with no busy excuse ("I do, I'll send you the info shortly", "ill send you infi shortly", "I'll send it over", "sending it shortly", "I'll text you the details", "I'll shoot it over", "sending now", "I'll send it to you") → reply "Awesome sounds good" → warm, scheduleHours=4.\n` +
     `- PRE-LISTING / COMING-SOON with NO timeframe given yet (agent says they'll have something soon, may get something, waiting on the listing agreement to be signed, coming to market, about to list, etc. but gives NO specific date or timeline): acknowledge warmly AND gently push for a rough timeline so we can time our follow-up. Examples: "Perfect, send me the details when you can. Any idea on the timing?" or "Sounds good! Roughly when do you think it'll be ready?" or "Awesome, keep me posted. Any sense of the timeframe?" → warm. Getting even a loose timeline ("next week", "once it's signed", "end of month") lets us follow up at the right moment. If they DO give a timeframe, the 'needs time to get details' rule below takes over (scheduleHours).\n` +
-    `- Agent confirmed they have a specific property but needs time to get details (address/price): follow_up, reply=null, set scheduleHours. Estimate hours from now based on the stated time — the system will override with an exact JS calculation, so your estimate just needs to be in the right ballpark. Examples: tomorrow=24, Wednesday/next Wednesday=hours until that weekday, next Friday=hours until that Friday, the Friday after next=hours until 2 Fridays from now, 4 Fridays from today=hours until the 4th Friday from now, the 11th/15th=hours until that date this or next month, may 1st/december 15=hours until that specific date, next week=168, in a couple weeks=336, about a month=720, next month=720, in a month or so=720, in a couple months=1440, in a few months=2160, in December/in July=hours until the 1st of that month; if vague ("I'll check", "I'll get back to you") use 48. SAME-DAY SHORT WAITS: "give me 30 mins", "I'm in a meeting", "with a client", "be right back", "give me an hour" → use 5 (the system gives them breathing room regardless of the literal time). SPECIFIC SAME-DAY TIME: "text me at 5:30 tonight", "call me at 3pm", "reach me at 6" → calculate exact hours to that time today.\n` +
-    `- SOFT MAYBE + CALLBACK ("possibly", "maybe", "might", "perhaps", "could be", "I think so" combined with any callback/delay phrase like "I'll get back with you", "I'll get back to you", "let me check", "I'll check", "I'll look into it", "I'll find out"): agent is signaling they MIGHT have something — this is NOT a cold-close. → follow_up, reply=null, scheduleHours=48. The "possibly/maybe" acts as a soft property signal. EXCEPTION to the passive search cold rule — never cold-close a message that opens with a soft affirmative like "possibly", "maybe", "might have something".\n` +
+    `- Agent confirmed they have a specific property but needs time to get details (address/price): warm, reply=null, set scheduleHours. (They HAVE a property, so this is warm by definition — the stated time just tells us when to resume chasing.) Estimate hours from now based on the stated time — the system will override with an exact JS calculation, so your estimate just needs to be in the right ballpark. Examples: tomorrow=24, Wednesday/next Wednesday=hours until that weekday, next Friday=hours until that Friday, the Friday after next=hours until 2 Fridays from now, 4 Fridays from today=hours until the 4th Friday from now, the 11th/15th=hours until that date this or next month, may 1st/december 15=hours until that specific date, next week=168, in a couple weeks=336, about a month=720, next month=720, in a month or so=720, in a couple months=1440, in a few months=2160, in December/in July=hours until the 1st of that month; if vague ("I'll check", "I'll get back to you") use 48. SAME-DAY SHORT WAITS: "give me 30 mins", "I'm in a meeting", "with a client", "be right back", "give me an hour" → use 5 (the system gives them breathing room regardless of the literal time). SPECIFIC SAME-DAY TIME: "text me at 5:30 tonight", "call me at 3pm", "reach me at 6" → calculate exact hours to that time today.\n` +
+    `- SOFT MAYBE + CALLBACK ("possibly", "maybe", "might", "perhaps", "could be", "I think so" combined with any callback/delay phrase like "I'll get back with you", "I'll get back to you", "let me check", "I'll check", "I'll look into it", "I'll find out"): agent is signaling they MIGHT have something — this is NOT a cold-close. → warm, reply=null, scheduleHours=48. The "possibly/maybe" acts as a soft property signal, and a property signal means warm so the chase resumes at the stated time. EXCEPTION to the passive search cold rule — never cold-close a message that opens with a soft affirmative like "possibly", "maybe", "might have something".\n` +
     `- "let me check" / "let me look" / "let me see": FIRST check whether the SAME message names any actual lead — a person/colleague who has one ("my coworker Bob has one", "I know a guy"), a specific property, an area, or "I might have one in X". If it names ANY such lead → that is a property or knows-someone signal → warm / knows_someone (ask for the details or that person's contact info); do NOT cold-close it. ONLY if it is BARE "let me check"/"let me look"/"let me see" with NOTHING else (no lead, no person, no property, no area) → not_interested, reply=null. On its own it never amounts to anything and there is no indication they have a property, so do NOT follow up on it.\n` +
     `- PASSIVE SEARCH / RESEARCH OFFER (cold ignore rule): if the agent says they will check, look, research, keep an eye out, or let you know — with NO confirmation they already have something specific in hand AND no criteria question asked — → not_interested, reply=null. This covers all these phrasings and their variations: "I'll check", "I'll look around", "I'll keep an eye out", "I'll see what's out there", "I'll look for something", "I can check and let you know", "I will do some research", "I'll do some research", "I'll research", "I'll look into it", "I'll let you know what I find", "I'll let you know", "I'll keep a lookout", "I'll keep looking", "I'll reach out if I find something", "I'll reach out if anything comes up", "slim pickings right now but I'll look", "I don't have anything but I'll check", "No, but I will [research/look/check]", "happy to run a search for you", "I can run a search for you", "I'll run a search", "run a search for you", "I can set you up on a search", "not currently but happy to [help/search/find]". The key test: is the agent passively offering to search with no property in hand? → cold. ONLY send criteria if they EXPLICITLY ask what you're looking for ("what are you looking for?", "what kind of properties?", "what's your criteria?", "what do you need?") in the same message — in that case only: follow_up, send criteria blurb. If the SAME message ALSO asks for your name and/or company ("give me your full name and company", "who am I speaking with and what company"), answer those too in the same reply, e.g. combine the identity answer with the criteria blurb — never drop a piece of a multi-part question just because criteria is one of the pieces.\n` +
     `- Agent says they sent/emailed the property details ("I sent it to your email", "just emailed you", "check your email", "I sent it over", "it should be in your email", "I just sent you the property", "sent you the info", "sent you the listing"): acknowledge and say you'll check. Reply: "Thanks, I'll check my email." → follow_up, scheduleHours=null. Do NOT ask for address or asking price — they already sent the details. If the agent is following up to say it's in the email after you mistakenly asked for address/price, same rule: reply "Got it, I'll check my email." → follow_up.\n` +
@@ -1927,7 +1927,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- IMPORTANT: "additions" or "two additions" in a property description means physical add-ons or extensions built onto the property (extra rooms, attached apartments, additions to the structure) — NOT multiple separate properties. "A home with two additions" is ONE property. Do not treat it as a multi-property message.\n` +
     `- TURNKEY / TENANTED PORTFOLIO: if the multi-property offer is a PORTFOLIO of turnkey / rented / tenanted properties (especially with property management in place, "portfolio", "rentals", "all leased/occupied") — these rarely move at a cash fixer-upper price. Do NOT chase the whole portfolio. Reply asking if they would sell the most distressed ones individually, e.g. "Would they be open to selling the most distressed ones individually? We could take a stab at a couple of those." → follow_up. If they name the distressed/vacant ones, pursue only those (warm). If they will not break it up or only want to move the whole turnkey portfolio → not_interested.\n\n` +
     `INTERROGATION CLOSE: if the agent has asked the same identity or location question 2+ times already (e.g. asked where you live twice, pressed for a specific city repeatedly) AND there is no property signal anywhere in the conversation → not_interested, reply=null. They are interrogating, not selling. Not worth engaging further.\n\n` +
-    `REFUSAL OVERRIDE: a clear no or soft no is still a no — do NOT send buy-box criteria. Covers: "No", "Nope", "No sorry 😢", "No thanks", "Not interested", "Not at this time", "Not right now", "Nothing right now", "Not at the moment", "Don't have anything right now", "Nothing at the moment", "Can't help you", "Not for you" — any message whose core meaning is a present-tense refusal or unavailability → not_interested, reply=null. Emojis do not change this. "Not right now" is a no, not an invitation to send criteria. ONLY send criteria if they EXPLICITLY ask what you are looking for in the same message ("Not right now, but what are you looking for?"). A standalone soft no with no criteria question = cold, no reply. CRITICAL CONTEXT EXCEPTION: if the conversation history shows the agent ALREADY shared a specific property (address, listing, or clear property signal) AND we already replied asking for price or details — then "Not right now", "Not at this time", "Give me a sec", "I'll get back to you", "Maybe later", "Let me check" from the agent is NOT a cold close. It means they can't send the price RIGHT NOW but the property is still live. Treat as follow_up, reply=null, scheduleHours=48. They are deferring the price, not rejecting us. Only apply the full REFUSAL OVERRIDE when there is NO prior property exchange in the conversation history.\n\n` +
+    `REFUSAL OVERRIDE: a clear no or soft no is still a no — do NOT send buy-box criteria. Covers: "No", "Nope", "No sorry 😢", "No thanks", "Not interested", "Not at this time", "Not right now", "Nothing right now", "Not at the moment", "Don't have anything right now", "Nothing at the moment", "Can't help you", "Not for you" — any message whose core meaning is a present-tense refusal or unavailability → not_interested, reply=null. Emojis do not change this. "Not right now" is a no, not an invitation to send criteria. ONLY send criteria if they EXPLICITLY ask what you are looking for in the same message ("Not right now, but what are you looking for?"). A standalone soft no with no criteria question = cold, no reply. CRITICAL CONTEXT EXCEPTION: if the conversation history shows the agent ALREADY shared a specific property (address, listing, or clear property signal) AND we already replied asking for price or details — then "Not right now", "Not at this time", "Give me a sec", "I'll get back to you", "Maybe later", "Let me check" from the agent is NOT a cold close. It means they can't send the price RIGHT NOW but the property is still live. Treat as warm, reply=null, scheduleHours=48. They are deferring the price, not rejecting us. Only apply the full REFUSAL OVERRIDE when there is NO prior property exchange in the conversation history.\n\n` +
     `REFUSAL + IDENTITY/SOURCE QUESTION: if the message contains a clear no/refusal AND also asks who you are, where you got their number, how you found them, or what company you're with ("No and how did you get my number?", "No, who gave you my info?", "Not interested, who is this?", "No, what company are you with?", "No and how did you get my info?", "Stop, where did you get my number?") → not_interested, reply=null. Do NOT explain how you found them. The no overrides everything. EXCEPTION: if the same message also contains a referral signal ("No, but my partner Jamie does", "I don't, but ask [name]", "my colleague might have something") → warm, reply asking for the referral's name and contact info.\n\n` +
     `ON-MARKET FOLLOW-UP: if the agent previously said no or nothing, and now says their available properties are on the MLS / listed / on market (e.g. "There's a couple of these on the MLS", "I have some but they're listed") → not_interested, reply=null. Do not respond. We only buy off-market.\n\n` +
     `NEW WESTERN / NETWORTH REALTY (hybrid wholesaler-brokerages): if the deal ORIGINATES with, is being sold BY, or COMES FROM New Western or Networth Realty (they are the source/wholesaler on this specific property) → not_interested, reply=null. They are wholesalers themselves, never direct on the deal, and the contract cannot be reassigned. IMPORTANT: this is ONLY a pass when the deal actually comes from them. A passing MENTION where the deal does NOT originate from them ("I almost sent this to New Western but decided not to", "New Western passed on it", "I used to work at New Western") is NOT a disqualifier — handle the property normally.\n\n` +
@@ -2076,6 +2076,15 @@ function parseScheduleHours(text) {
   // either a following day number or a leading temporal preposition, so "may"/"mar" as
   // ordinary words don't false-trigger.
   const MONTH_ALT = ['jan(?:uary)?','feb(?:ruary)?','mar(?:ch)?','apr(?:il)?','may','jun(?:e)?','jul(?:y)?','aug(?:ust)?','sep(?:t|tember)?','oct(?:ober)?','nov(?:ember)?','dec(?:ember)?'];
+  // Same 7 weekdays, each accepting the common abbreviations agents actually text
+  // ("next tues", "by thurs", "fri"). Used ONLY in branches anchored by a temporal
+  // word (next/this/on/by/after) — never for a bare match, because bare "sat"/"sun"/
+  // "mon"/"wed" are ordinary English words and would false-trigger constantly.
+  const DAY_ALT = ['sun(?:day)?','mon(?:day)?','tue(?:s|sday)?','wed(?:nesday)?','thu(?:r|rs|rsday)?','fri(?:day)?','sat(?:urday)?'];
+  // Spelled-out counts, so "two fridays from today" / "three weeks" parse like digits.
+  const WORD_NUM = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12 };
+  const NUM_ALT = Object.keys(WORD_NUM).join('|');
+  const toNum = (tok) => /^\d+$/.test(tok) ? parseInt(tok, 10) : (WORD_NUM[tok] || null);
 
   const hoursTo = (d) => { const h = Math.round((d - now) / 3600000); return h > 1 ? h : null; };
 
@@ -2137,6 +2146,12 @@ function parseScheduleHours(text) {
 
   let m;
 
+  // "the day after tomorrow" — MUST be tested before the plain "tomorrow" branch below,
+  // which would otherwise swallow it and schedule a full day early.
+  if (/\b(?:the\s+)?day\s+after\s+tomorrow\b/.test(lower)) {
+    const d = new Date(now); d.setDate(d.getDate() + 2); d.setHours(9,0,0,0); return hoursTo(d);
+  }
+
   // "tomorrow"
   if (/\btomorrow\b/.test(lower)) {
     const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(9,0,0,0); return hoursTo(d);
@@ -2145,6 +2160,31 @@ function parseScheduleHours(text) {
   // "in N days" / "N days from now/today"
   m = lower.match(/\bin\s+(\d+)\s+days?\b|\b(\d+)\s+days?\s+from\s+(?:now|today)\b/);
   if (m) { const n=parseInt(m[1]||m[2]); const d=new Date(now); d.setDate(d.getDate()+n); d.setHours(9,0,0,0); return hoursTo(d); }
+
+  // "in N weeks" / "N weeks from now/today" — digits or spelled ("three weeks").
+  // Placed above the couple/few branches, which match words this one deliberately skips.
+  m = lower.match(new RegExp(`\\bin\\s+(\\d+|${NUM_ALT})\\s+weeks?\\b|\\b(\\d+|${NUM_ALT})\\s+weeks?\\s+from\\s+(?:now|today)\\b`));
+  if (m) {
+    const n = toNum(m[1] || m[2]);
+    if (n) { const d=new Date(now); d.setDate(d.getDate()+n*7); d.setHours(9,0,0,0); return hoursTo(d); }
+  }
+
+  // "in N months" / "N months from now/today" — e.g. "11 months from now", "in 6 months"
+  m = lower.match(new RegExp(`\\bin\\s+(\\d+|${NUM_ALT})\\s+months?\\b|\\b(\\d+|${NUM_ALT})\\s+months?\\s+from\\s+(?:now|today)\\b`));
+  if (m) {
+    const n = toNum(m[1] || m[2]);
+    if (n) { const d=new Date(now); d.setMonth(d.getMonth()+n); d.setHours(9,0,0,0); return hoursTo(d); }
+  }
+
+  // "a year from now" / "in a year" / "in N years". Skipped on questions: "how many flips
+  // do you complete in a year?" is a volume question about US, not a timeline commitment
+  // from them. Same no-question guard the same-day vague block above uses.
+  m = lower.includes('?') ? null : lower.match(new RegExp(`\\bin\\s+(?:a|one|\\d+|${NUM_ALT})\\s+years?\\b|\\b(?:a|one|\\d+|${NUM_ALT})\\s+years?\\s+from\\s+(?:now|today)\\b`));
+  if (m) {
+    const tok = (m[0].match(new RegExp(`(a|one|\\d+|${NUM_ALT})`)) || [])[1];
+    const n = (tok === 'a' || tok === 'one') ? 1 : (toNum(tok) || 1);
+    const d=new Date(now); d.setFullYear(d.getFullYear()+n); d.setHours(9,0,0,0); return hoursTo(d);
+  }
 
   // "in a couple (of) months" / "a couple months" → 60 days
   if (/\b(?:a\s+)?couple\s+(?:of\s+)?months?\b/.test(lower)) {
@@ -2164,6 +2204,24 @@ function parseScheduleHours(text) {
   // "in a few days" / "a couple days" / "few days" / "couple days" → 3 days
   if (/\b(?:a\s+)?(?:few|couple)\s+(?:of\s+)?days?\b/.test(lower)) {
     const d=new Date(now); d.setDate(d.getDate()+3); d.setHours(9,0,0,0); return hoursTo(d);
+  }
+
+  // "end of next week" / "end of the week" → the upcoming Friday (agents mean the work week)
+  if (/\bend\s+of\s+(?:the\s+)?next\s+week\b/.test(lower)) {
+    const d=new Date(now); d.setDate(d.getDate()+daysToWeekday(5)+7); d.setHours(9,0,0,0); return hoursTo(d);
+  }
+  if (/\bend\s+of\s+(?:the\s+)?week\b|\beow\b/.test(lower)) {
+    const d=new Date(now); d.setDate(d.getDate()+daysToWeekday(5)); d.setHours(9,0,0,0); return hoursTo(d);
+  }
+  // "end of next month" → last day of next month; "end of the month" → last day of this
+  // month (rolling to next if we're already past it). Day 0 of month N+1 = last day of N.
+  if (/\bend\s+of\s+(?:the\s+)?next\s+month\b/.test(lower)) {
+    return hoursTo(new Date(now.getFullYear(), now.getMonth()+2, 0, 9, 0, 0));
+  }
+  if (/\bend\s+of\s+(?:the\s+)?month\b|\beom\b/.test(lower)) {
+    let target = new Date(now.getFullYear(), now.getMonth()+1, 0, 9, 0, 0);
+    if (target <= now) target = new Date(now.getFullYear(), now.getMonth()+2, 0, 9, 0, 0);
+    return hoursTo(target);
   }
 
   // "next month" → 30 days
@@ -2190,6 +2248,18 @@ function parseScheduleHours(text) {
     const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
   }
 
+  // Same as above but accepting spelled counts and abbreviated weekdays: "two fridays from
+  // today", "3 tues from now". Runs second so the strict digit + full-name form keeps priority.
+  for (let i = 0; i < DAY_ALT.length; i++) {
+    m = lower.match(new RegExp(`\\b(\\d+|${NUM_ALT})\\s+(?:${DAY_ALT[i]})s?\\s+from\\s+(?:today|now)\\b`));
+    if (m) {
+      const count = toNum(m[1]);
+      if (count) {
+        const d=new Date(now); d.setDate(d.getDate()+daysToWeekday(i)+(count-1)*7); d.setHours(9,0,0,0); return hoursTo(d);
+      }
+    }
+  }
+
   // "the <day> after next" / "<day> after next" → 2nd upcoming occurrence
   m = lower.match(/\b(?:the\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+after\s+next\b/);
   if (m) {
@@ -2203,6 +2273,22 @@ function parseScheduleHours(text) {
     const wd=DAYS.indexOf(m[1]);
     const days = now.getDay()===wd ? 7 : daysToWeekday(wd);
     const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
+  }
+
+  // Abbreviated weekdays ("next tues", "by thurs", "this wed", "on fri"). ANCHORED by a
+  // temporal word on purpose: bare "sat"/"sun"/"mon"/"wed"/"march" style words appear in
+  // ordinary sentences, so an unanchored abbreviation match would false-trigger constantly.
+  // Full-name forms are handled by the branches above and keep priority.
+  for (let i = 0; i < DAY_ALT.length; i++) {
+    if (new RegExp(`\\b(?:the\\s+)?(?:${DAY_ALT[i]})\\s+after\\s+next\\b`).test(lower)) {
+      const d=new Date(now); d.setDate(d.getDate()+daysToWeekday(i)+7); d.setHours(9,0,0,0); return hoursTo(d);
+    }
+  }
+  for (let i = 0; i < DAY_ALT.length; i++) {
+    if (new RegExp(`\\b(?:next|this|on|by|come)\\s+(?:${DAY_ALT[i]})\\b`).test(lower)) {
+      const days = now.getDay() === i ? 7 : daysToWeekday(i);
+      const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
+    }
   }
 
   // Bare weekday name: "wednesday", "friday" → next occurrence
@@ -2365,30 +2451,149 @@ const DRIP_MISSING_LABEL = {
   price:   'asking price',
 };
 
-const DRIP_STEP_DELAYS_H = { 1: 48, 2: 48, 3: 168, 4: 168 }; // hours to next step
+// ── Drip v2 shape ────────────────────────────────────────────────────────────
+// A warm conversation is one where the agent HAS a property but we're still missing the
+// address and/or the asking price. That is the only thing standing between us and a
+// submitted lead, so warm always chases: 10 consecutive daily touches, one per day, all
+// seven days of the week, each at a randomised time so the pattern never reads as a bot.
+const DRIP_TOTAL_STEPS = 10;   // touches in one full cycle
+const DRIP_MAX_CYCLES  = 3;    // initial run + 2 restarts earned by a fresh timeline
+const DRIP_MAX_TOUCHES = 30;   // lifetime ceiling across every cycle
+// A timeframe further out than this is a genuine long-term park ("next November"), not
+// someone stalling us. Long parks wait silently and do NOT consume a restart.
+const DRIP_LONG_HORIZON_H = 720; // 30 days
 
+// Ten ways to ask the same question, plus ten more held back for a restarted drip, so an
+// agent who strings us along for a month still never sees the same sentence twice.
+// {name} is dropped when we have no first name. NO em dashes anywhere in this bank.
+const DRIP_MESSAGES = [
+  "Hey {name}, were you able to grab the {missing}?",
+  "Just following up. Are you able to send over the {missing}?",
+  "Hi {name}, any luck getting the {missing}?",
+  "Checking in on this one. Do you have the {missing} yet?",
+  "Hey, still interested in this one. Can you send the {missing} when you get a sec?",
+  "Following up again. Were you able to track down the {missing}?",
+  "Hi {name}, any update on the {missing}?",
+  "Hey, circling back on this. I still need the {missing} to run numbers.",
+  "Just checking, did you get the {missing} from the seller?",
+  "Hey {name}, send the {missing} whenever you have it and I'll take a look.",
+  "Morning {name}, any word on the {missing}?",
+  "Hey, following up on that one. Still need the {missing} if you can grab it.",
+  "Hi, did you ever get the {missing} on that property?",
+  "Hey {name}, checking back. Were you able to pull the {missing}?",
+  "Following up. Any chance you have the {missing} handy?",
+  "Hey, still watching for the {missing} on this one whenever you get it.",
+  "Hi {name}, were you able to find out the {missing}?",
+  "Quick check in. Do you have the {missing} for me yet?",
+  "Hey, circling back one more time on the {missing}.",
+  "Hi {name}, any movement on getting the {missing}?",
+];
+
+// Deterministic per-conversation shuffle so two different agents never receive the same
+// sequence of lines, while the same conversation stays stable across restarts of the app.
+function dripVariantOrder(convId) {
+  const order = DRIP_MESSAGES.map((_, i) => i);
+  let seed = (convId * 2654435761) % 2147483647;
+  for (let i = order.length - 1; i > 0; i--) {
+    seed = (seed * 1103515245 + 12345) % 2147483647;
+    const j = seed % (i + 1);
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
+// Pick the next unused line for this conversation. Falls back to the least-recently-used
+// slot only if all 20 are somehow exhausted (cycle caps make that unreachable in practice).
+function pickDripVariant(convId, usedVariants) {
+  const used = new Set(usedVariants || []);
+  const order = dripVariantOrder(convId);
+  for (const idx of order) if (!used.has(idx)) return idx;
+  return order[0];
+}
+
+function renderDripMessage(variantIdx, missing, contact) {
+  const tpl = DRIP_MESSAGES[variantIdx] || DRIP_MESSAGES[0];
+  const label = DRIP_MISSING_LABEL[missing] || 'address and asking price';
+  const first = (contact && contact.name ? String(contact.name).trim().split(/\s+/)[0] : '') || '';
+  // Strip the name slot cleanly when we don't know it, including the comma before it,
+  // so we never text a literal "Hey , were you able..." or a stray double space.
+  let out = first ? tpl.replace('{name}', first) : tpl.replace(/,?\s*\{name\}/, '');
+  out = out.replace('{missing}', label).replace(/\s{2,}/g, ' ').trim();
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+// Epoch seconds for a touch `hoursAhead` from now, landing at a random human-ish time of
+// day in Eastern. Randomising the clock time is what keeps a daily cadence from reading as
+// automated; a fixed 9am every morning is the giveaway.
+//
+// Takes HOURS, not days, so an agent's own date survives intact: "next Tuesday" is 154h,
+// and rounding that to 6 days would land the touch on Monday. We keep the target calendar
+// day the hour count implies and only randomise the time within it. Sub-24h delays are
+// honoured literally, since "give me an hour" means an hour.
+function dripSendAt(hoursAhead, settings) {
+  const nowMs = Date.now();
+  const nowSec = Math.floor(nowMs / 1000);
+  if (hoursAhead > 0 && hoursAhead < 24) return nowSec + Math.round(hoursAhead * 3600);
+
+  const startH = parseInt(settings.quietStartHour || '8', 10);
+  const endH   = parseInt(settings.quietEndHour   || '21', 10);
+  // Stay a margin inside the permitted window so a touch never lands on the boundary
+  // minute and gets deferred a whole day by withinSendingHours.
+  const lo = Math.max(startH + 1, 9);
+  const hi = Math.max(lo, Math.min(endH - 2, 19));
+  const hour = lo + Math.floor(Math.random() * (hi - lo + 1));
+  const minute = Math.floor(Math.random() * 60);
+
+  const targetMs = nowMs + Math.max(0, hoursAhead) * 3600000;
+  const etTarget = new Date(new Date(targetMs).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etNow = new Date(new Date(nowMs).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const offsetMs = nowMs - etNow.getTime(); // ET wall clock → real instant
+  etTarget.setHours(hour, minute, 0, 0);
+  let at = Math.floor((etTarget.getTime() + offsetMs) / 1000);
+  // If that slot already passed (enrolling late at night, say), roll to the next day's
+  // slot rather than letting it fire at the next in-window poll — otherwise everything
+  // queued overnight goes out together at the 8am boundary, exactly the pattern we're
+  // trying to avoid.
+  if (at <= nowSec + 60) at += 86400;
+  return at;
+}
+
+// 'pending' = a pre-listing/coming-soon deal we're waiting on (the seller hasn't signed
+// yet). Poll the STATE. Do NOT pester for an address or price that doesn't exist yet.
+// Ten variants so a pending park gets the same non-repeating treatment as a detail chase.
+const DRIP_PENDING_MESSAGES = [
+  "Hey, just checking in, any update on that listing?",
+  "Hi again, any word on the property getting signed?",
+  "Following up, any movement on that one?",
+  "Hey, still interested whenever it firms up. Any news?",
+  "Checking in, has anything come together on that one?",
+  "Hi, any progress on getting that one signed?",
+  "Hey, still keeping an eye out for this one. Any update?",
+  "Following up, did the seller move forward with it?",
+  "Quick check in, where does that one stand?",
+  "Hey, no rush at all, just let me know if it comes together.",
+];
+
+// Single entry point for drip copy. Returns { body, variant } so the caller can record
+// which line went out and never repeat it in this conversation.
+function dripBodyFor(missing, contact, convId, usedVariants) {
+  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES : DRIP_MESSAGES;
+  const used = new Set(usedVariants || []);
+  const order = dripVariantOrder(convId).filter(i => i < bank.length);
+  let variant = order.find(i => !used.has(i));
+  if (variant === undefined) variant = order[0] ?? 0;
+  if (missing === 'pending') return { body: DRIP_PENDING_MESSAGES[variant], variant };
+  return { body: renderDripMessage(variant, missing, contact), variant };
+}
+
+// Back-compat shim: the sandbox planner still asks for copy by step number. Keeps the
+// simulator rendering readable text without duplicating the selection logic.
 function dripMessage(step, missing) {
-  // 'pending' = a pre-listing/coming-soon deal we're waiting on (seller hasn't signed
-  // yet). Poll the STATE — do not pester for an address/price that doesn't exist yet.
-  if (missing === 'pending') {
-    switch (step) {
-      case 1: return `Hey, just checking in, any update on that listing?`;
-      case 2: return `Hi again, any word on the property getting signed?`;
-      case 3: return `Following up, any movement on that one?`;
-      case 4: return `Hey, still interested whenever it firms up, any news?`;
-      case 5: return `Following up one last time on this. No rush, just let me know if it comes together whenever you're ready.`;
-      default: return null;
-    }
-  }
-  const m = DRIP_MISSING_LABEL[missing] || 'address and asking price';
-  switch (step) {
-    case 1: return `Hey, just following up, were you able to grab the ${m} for me?`;
-    case 2: return `Hi again, checking back in, do you have the ${m}?`;
-    case 3: return `Following up again, any luck getting the ${m} together?`;
-    case 4: return `Hey, I'm still interested if you can send over the ${m} when you get a chance.`;
-    case 5: return `Following up one last time on this one. No worries if the timing isn't right, just let me know if you get the address or price whenever you're ready.`;
-    default: return null;
-  }
+  if (step > DRIP_TOTAL_STEPS) return null;
+  const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES : DRIP_MESSAGES;
+  const tpl = bank[(step - 1) % bank.length];
+  if (missing === 'pending') return tpl;
+  return renderDripMessage((step - 1) % DRIP_MESSAGES.length, missing, null);
 }
 
 // Infer what's missing from the last outbound message we sent in that warm conv.
@@ -2501,17 +2706,23 @@ function followUpBodyFromMessages(msgs) {
   return pickVariation('updates');
 }
 
-// Build the exact drip cascade (5 touches) a warm/pending conversation would receive,
-// with cumulative hours from the last agent message. firstDelayH is when step 1 lands
-// (24h for the auto ghost-chaser, 72h for a pending state-poll, or the stated timeframe).
+// Build the exact drip cascade a warm/pending conversation would receive: 10 touches,
+// one per day, with cumulative hours from the last agent message. firstDelayH is when
+// touch 1 lands (24h for the standard chase, or the agent's own stated timeframe, in
+// which case the whole 10-day run is pushed out to start at that moment).
+// Production randomises the time of day; the planner shows clean 24h steps because the
+// sandbox is illustrating the SEQUENCE, not predicting the exact minute.
 function dripCascade(missing, firstDelayH) {
-  const stepDelays = [firstDelayH, 48, 48, 168, 168]; // step1, then DRIP_STEP_DELAYS_H
   const out = [];
-  let cum = 0;
-  for (let step = 1; step <= 5; step++) {
-    cum += stepDelays[step - 1];
+  for (let step = 1; step <= DRIP_TOTAL_STEPS; step++) {
     const body = dripMessage(step, missing);
-    if (body) out.push({ hours: cum, body, kind: missing === 'pending' ? 'state-poll' : 'drip' });
+    if (body) {
+      out.push({
+        hours: firstDelayH + (step - 1) * 24,
+        body,
+        kind: missing === 'pending' ? 'state-poll' : 'drip',
+      });
+    }
   }
   return out;
 }
@@ -2529,11 +2740,13 @@ function planFollowUps(result, fullMsgs) {
   if (bucket === 'timeframe_deferral' && result.scheduleHours) {
     return dripCascade(missingFromMessages(fullMsgs), result.scheduleHours);
   }
-  if (cat === 'follow_up' && result.scheduleHours) {
-    return [{ hours: result.scheduleHours, body: followUpBodyFromMessages(fullMsgs), kind: 'follow-up' }];
+  // A stated timeframe on a warm thread DELAYS the run rather than replacing it: the
+  // 10 days start at the promised moment. follow_up means no property signal, so it is
+  // never chased regardless of any hours the classifier attached.
+  if (cat === 'warm') {
+    return dripCascade(missingFromMessages(fullMsgs), result.scheduleHours || 24);
   }
-  if (cat === 'warm') return dripCascade(missingFromMessages(fullMsgs), 24); // auto ghost-chaser
-  return []; // cold / hot / follow_up with no timer → nothing scheduled
+  return []; // cold / hot / follow_up → nothing scheduled
 }
 
 // Current hour (0–23) in Eastern time, robust to DST and the host machine's timezone.
@@ -2585,14 +2798,17 @@ async function sendDueWarmDrips(settings) {
       // drip would re-ask for something we already have. 'pending' state-polls aren't
       // about address/price at all (waiting on the listing to exist), so leave those.
       const missing = drip.missing === 'pending' ? 'pending' : detectMissingHeld(drip.conv_id);
-      const body = sanitizeForGSM7(dripMessage(drip.step, missing));
+      // Pick a line this agent has not already been sent. The variant is recorded on the
+      // row when it goes out, so a restarted drip keeps drawing from what's left.
+      const picked = dripBodyFor(missing, contact, drip.conv_id, db.getUsedDripVariants(drip.conv_id));
+      const body = sanitizeForGSM7(picked.body);
       if (!body) { db.cancelWarmDrips(drip.conv_id); continue; }
 
       // Self-healing dedup: if this exact step body already went out (e.g. a prior
       // send succeeded but then threw before markWarmDripSent), don't re-send —
       // just advance the chain.
       if (db.hasOutboundMessage(drip.conv_id, body)) {
-        db.markWarmDripSent(drip.id);
+        db.markWarmDripSent(drip.id, picked.variant);
         // fall through to queue the next step / cold-close below
       } else {
         try {
@@ -2604,8 +2820,14 @@ async function sendDueWarmDrips(settings) {
           const permanentlyBlocked = !normalized ||
             (db.isPhoneStopped(normalized) && !db.isPhoneWhitelisted(normalized));
           if (permanentlyBlocked) {
+            // Also drop the conversation out of 'warm'. Cancelling the drip alone left the
+            // conversation eligible for the auto-queuer, which re-created the step next poll
+            // and cancelled it again — a cancel/recreate loop that ran ~275 times/conv on
+            // two opted-out threads. Taking it out of 'warm' breaks that cycle for good.
             db.cancelWarmDrips(drip.conv_id);
-            log(`Warm drip cancelled for ${contact.phone} — permanently blocked: ${g.message}`);
+            db.updateConversationCategory(drip.conv_id, 'not_interested');
+            db.logAudit('warm_drip_blocked_cold', { convId: drip.conv_id, phone: contact.phone });
+            log(`Warm drip cancelled + conv ${drip.conv_id} closed — permanently blocked: ${g.message}`);
           } else {
             log(`Warm drip deferred for conv ${drip.conv_id}: ${g.message} (will retry next poll)`);
           }
@@ -2615,22 +2837,27 @@ async function sendDueWarmDrips(settings) {
         await twilio.sendSMS(settings.accountSid, settings.authToken, settings.phoneNumber, contact.phone, body, settings.messagingServiceSid);
         db.addMessage(drip.conv_id, body, 'outbound', null, null);
         db.incrementDailyCount();
-        db.markWarmDripSent(drip.id);
+        db.markWarmDripSent(drip.id, picked.variant);
       }
       aiMarkRead(drip.conv_id);
-      db.logAudit('warm_drip_sent', { convId: drip.conv_id, phone: contact.phone, step: drip.step, missing });
-      log(`Warm drip step ${drip.step} → ${contact.phone} (${contact.name || contact.phone}) missing:${missing}`);
+      const cycle = drip.cycle || 1;
+      db.logAudit('warm_drip_sent', { convId: drip.conv_id, phone: contact.phone, step: drip.step, cycle, missing });
+      log(`Warm drip ${drip.step}/${DRIP_TOTAL_STEPS} (cycle ${cycle}) → ${contact.phone} (${contact.name || contact.phone}) missing:${missing}`);
 
-      if (drip.step < 5) {
-        const delayH = DRIP_STEP_DELAYS_H[drip.step];
-        const nextSendAt = Math.floor(Date.now() / 1000) + (delayH * 3600);
-        db.createWarmDrip(drip.conv_id, drip.contact_id, drip.step + 1, missing, nextSendAt);
-        log(`Warm drip step ${drip.step + 1} queued for conv ${drip.conv_id} in ${delayH}h`);
+      const lifetimeTouches = db.countSentDrips(drip.conv_id);
+      if (drip.step < DRIP_TOTAL_STEPS && lifetimeTouches < DRIP_MAX_TOUCHES) {
+        // Next touch lands tomorrow at a randomised time. One message per day, seven days
+        // a week: agents work weekends, and a Mon-Fri-only pattern is itself a bot tell.
+        const nextSendAt = dripSendAt(24, settings);
+        db.createWarmDrip(drip.conv_id, drip.contact_id, drip.step + 1, missing, nextSendAt, cycle);
+        log(`Warm drip ${drip.step + 1}/${DRIP_TOTAL_STEPS} queued for conv ${drip.conv_id} at ${new Date(nextSendAt * 1000).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET`);
       } else {
-        // 5 touches with no reply → drop to cold
+        // Ghosted the full run (or hit the lifetime ceiling) → cold, parked, silent.
+        // Silence never buys another cycle; only a REPLY carrying a fresh timeline does,
+        // and that restart is handled in decidePhase2, not here.
         db.updateConversationCategory(drip.conv_id, 'not_interested');
-        db.logAudit('warm_drip_expired', { convId: drip.conv_id, phone: contact.phone });
-        log(`Warm drip complete — conv ${drip.conv_id} marked cold after 5 unanswered touches`);
+        db.logAudit('warm_drip_expired', { convId: drip.conv_id, phone: contact.phone, cycle, touches: lifetimeTouches });
+        log(`Warm drip complete — conv ${drip.conv_id} cold after ${lifetimeTouches} unanswered touches (cycle ${cycle})`);
       }
     } catch (dripErr) {
       // Leave the step pending on a transient error (network / Twilio 5xx) so it
@@ -2711,6 +2938,16 @@ const P2_REFUSES_RANGE_RE = /^(no\b|nope\b|no range\b|no idea\b|whatever you thi
 // don't have is inappropriate). Distinguishes "still working on that part / waiting on the
 // seller" from a true make-offer deflection where a price exists but they won't name it.
 const P2_PRICE_PENDING_REASON_RE = /still (working|figuring)|working on (it|that|the (price|number))|waiting (on|for|to hear)|(seller|owner|they|he|she) (hasn'?t|have(n'?t)? |has not|will|to |needs? to)|(need|have|going|want) to (check|ask|confirm|find out)|(don'?t|do not|doesn'?t) know (yet|the price|it)?|not sure (yet)?|haven'?t (gotten|priced|decided|determined)|no price yet|to be determined|\btbd\b|i'?ll (ask|find out|check|get)/i;
+// The PROPERTY itself is gone: sold, taken, withdrawn. Distinct from P2_SELLER_MIA_RE
+// (deal stalled, seller quiet) which stays alive with a long check-in — this one is
+// terminal, so the drip stops and the thread parks cold with no reply. Deliberately
+// narrow: it must be ABOUT the property, so an agent's sales history ("I've sold 30
+// homes this year") can't trip it.
+// CAREFUL with "off the market": in wholesaling that phrase means a property is NOT
+// listed, i.e. exactly the inventory we want. Real messages like "a lot of properties
+// that just came off the market" are leads, not dead ends, so only "off the table" is
+// treated as terminal here.
+const P2_DEAD_PROPERTY_RE = /\b(?:it|that one|this one|the (?:house|property|one|deal|listing))\s+(?:just\s+|already\s+)?(?:sold|is sold|has sold|went under contract|is gone|is no longer available|got taken)\b|\bno longer (?:have|having) (?:it|that|the (?:house|property|one))\b|\balready sold\b|\bit'?s (?:sold|gone)\b|\bsold it\b|\bwe sold that\b|\boff the table\b|\bnot available (?:anymore|any longer)\b/i;
 
 /**
  * input: {
@@ -2732,9 +2969,17 @@ async function decidePhase2(input) {
   const extras = {}; // pivot/capRevivedTo carried onto whatever decision is finally returned
   const dec = (d) => ({ ...extras, ...d });
 
-  // Seller MIA — genuinely-collapsed deal: brief ack + one long check-in.
+  // Property is gone (sold / taken / withdrawn) — terminal. Stop the drip, park cold,
+  // say nothing. Checked BEFORE seller-MIA so a definite "it sold" isn't treated as a
+  // merely-stalled deal that we keep checking back on.
+  if (P2_DEAD_PROPERTY_RE.test(message)) {
+    return dec({ kind: 'property_dead', category: 'not_interested', bucket: 'property_sold' });
+  }
+  // Seller MIA — deal stalled but not dead: brief ack, then park the chase 14 days out
+  // and resume the drip from there rather than pestering while the seller is unreachable.
   if (P2_SELLER_MIA_RE.test(message)) {
-    return dec({ kind: 'seller_mia', reply: 'Okay, let me know!', category: 'follow_up', hours: 336, followUpBody: 'Have you heard back from the seller?' });
+    return dec({ kind: 'seller_mia', reply: 'Okay, let me know!', category: 'warm', hours: 336,
+                 dripStep: 1, dripMissing: state.missingForDrip, dripCycle: state.dripCycle || 1 });
   }
   // Wrong number / wrong person — cold, silent.
   if (P2_WRONG_RE.test(message)) {
@@ -2773,7 +3018,7 @@ async function decidePhase2(input) {
   if (parseScheduleHours(message) === null && !burstHasAddr && !burstHasPrice
       && isPendingWaitReply(message, state.lastOutBody, '')) {
     const lastStep = state.lastDripStep || 0;
-    if (lastStep >= 5 || state.totalOutbound >= CHASE_HARD_CAP) {
+    if (lastStep >= DRIP_TOTAL_STEPS || state.totalOutbound >= CHASE_HARD_CAP) {
       return dec({ kind: 'chase_exhausted', category: 'not_interested' });
     }
     const chaseMissing = (state.missingHeld === 'both') ? 'pending' : state.missingHeld;
@@ -2782,7 +3027,10 @@ async function decidePhase2(input) {
       kind: 'pending_poll', category: 'warm',
       reply: alreadyChasing ? null : 'No worries, keep me posted.',
       dripStep: lastStep + 1, dripMissing: chaseMissing,
-      hours: lastStep > 0 ? (DRIP_STEP_DELAYS_H[lastStep] || 168) : 72,
+      // First poll gives the listing 3 days to materialise; after that the pending park
+      // follows the same one-a-day rhythm as the detail chase.
+      hours: lastStep > 0 ? 24 : 72,
+      dripCycle: state.dripCycle || 1,
     });
   }
 
@@ -2815,9 +3063,11 @@ async function decidePhase2(input) {
     // Timeframe deferral — only when NO address anywhere in the conversation (an established
     // property makes "next week" about photos/access, not availability).
     const convoHasAddress = burstHasAddr || recentMsgs.some(m => m.direction === 'inbound' && containsStreetAddress(m.body || ''));
-    const tfHours = parseScheduleHours(message);
+    const tfHours = statedHours(message, warmClass);
     if (tfHours !== null && !convoHasAddress && !burstHasPrice && !detectGoingLiveUrgency(message) && !detectAutoReply(message) && !detectCallScheduleNoProperty(message) && !detectHostility(message)) {
-      return dec({ kind: 'timeframe_drip', category: 'warm', reply: timeframeDeferralReply(message), hours: tfHours, dripStep: 1, dripMissing: state.missingForDrip });
+      // The stated date becomes the drip's start line: acknowledge, wait, then run the
+      // full 10 days from that moment. Long-dated parks don't consume a restart.
+      return restartDrip('timeframe_drip', tfHours, timeframeDeferralReply(message));
     }
   } else {
     // Response to the "Are you direct on these?" multi-property gate.
@@ -2859,6 +3109,41 @@ async function decidePhase2(input) {
   const engageOrHold = (warmDecision) => convoHasPropertySignal
     ? dec(warmDecision)
     : dec({ kind: 'engaged_no_signal', category: 'follow_up', reply: warmDecision.reply ?? null });
+
+  // A timeframe from the agent RE-ANCHORS the whole 10-day drip to that moment rather
+  // than cancelling it: the chase is delayed, not abandoned. Mid-drip this restarts the
+  // run from touch 1 on the promised date.
+  //
+  // The abuse this guards against is an agent stringing us along with a rolling series of
+  // "next Tuesday"s. So a SHORT-horizon promise consumes one of DRIP_MAX_CYCLES restarts,
+  // while a genuinely long-dated park ("next November") costs nothing — that agent is not
+  // jerking us around, they simply have a date. Note that silence can never earn a restart;
+  // only a reply reaches this code, which is what stops the loop from being infinite.
+  const restartDrip = (kind, hours, reply) => {
+    const cycle = state.dripCycle || 1;
+    const longHorizon = hours >= DRIP_LONG_HORIZON_H;
+    const outOfCycles = !longHorizon && cycle >= DRIP_MAX_CYCLES;
+    const outOfTouches = (state.sentDrips || 0) >= DRIP_MAX_TOUCHES;
+    if (outOfCycles || outOfTouches) {
+      return dec({ kind: 'drip_strung_along', category: 'not_interested',
+                   bucket: outOfTouches ? 'touch_ceiling' : 'rolling_promises' });
+    }
+    return dec({
+      kind, category: 'warm', reply,
+      dripStep: 1, dripMissing: state.missingForDrip, hours,
+      dripCycle: longHorizon ? cycle : cycle + 1, dripRestart: true,
+    });
+  };
+
+  // The agent's stated timeframe, deterministic parse first and the classifier's own
+  // estimate as the fallback. decidePhase2 previously used the raw parser only, so any
+  // phrasing the regexes missed silently became "no timeframe given" and the drip just
+  // ploughed ahead on its original schedule.
+  const statedHours = (msg, llm) => {
+    const parsed = parseScheduleHours(msg);
+    if (parsed !== null) return parsed;
+    return (llm && typeof llm.scheduleHours === 'number' && llm.scheduleHours > 0) ? llm.scheduleHours : null;
+  };
 
   // ── Detailed watchdog (address/price hunting + drip machinery) ──
   if (state.lastOutBody === 'This is off-market correct?') {
@@ -2914,21 +3199,26 @@ async function decidePhase2(input) {
 
   // No address, no price — drip machinery.
   if (state.lastDripStep !== null) {
+    // Same-day delay ("tonight", "in an hour"). Push the next touch a few hours out.
+    // Does NOT consume a restart: someone who is busy for an afternoon is not stalling us.
     if (P2_DRIP_SAMEDAY_RE.test(message)) {
-      return dec({ kind: 'drip_sameday', category: 'warm', reply: "Sounds good, I'll check back!", hours: 5 });
+      return dec({ kind: 'drip_sameday', category: 'warm', reply: "Sounds good, I'll check back!",
+                   hours: 5, dripStep: 1, dripMissing: state.missingForDrip, dripCycle: state.dripCycle || 1 });
     }
+    // A future date mid-drip restarts the 10 days from that date.
     if (P2_DRIP_FUTURE_RE.test(message)) {
       const f = await generateAiReply(message, recentMsgs, contact, settings);
-      const sendH = (f.scheduleHours && f.scheduleHours < 720) ? f.scheduleHours : 48;
-      return dec({ kind: 'drip_future', category: 'warm', reply: f.reply || "Sounds good, I'll follow up with you then!", hours: sendH });
+      const sendH = statedHours(message, f) || 48;
+      return restartDrip('drip_future', sendH, f.reply || "Sounds good, I'll follow up with you then!");
     }
     const nextStep = state.lastDripStep + 1;
-    if (nextStep > 5) {
+    if (nextStep > DRIP_TOTAL_STEPS || (state.sentDrips || 0) >= DRIP_MAX_TOUCHES) {
       // NOTE: pre-refactor code set not_interested here then re-warmed it at the block
       // tail (latent bug). Exhausted now STAYS cold, matching the logged intent.
       return dec({ kind: 'drip_exhausted', category: 'not_interested' });
     }
-    return dec({ kind: 'drip_continue', category: 'warm', dripStep: nextStep, dripMissing: state.missingForDrip, hours: DRIP_STEP_DELAYS_H[nextStep - 1] || 168 });
+    return dec({ kind: 'drip_continue', category: 'warm', dripStep: nextStep,
+                 dripMissing: state.missingForDrip, hours: 24, dripCycle: state.dripCycle || 1 });
   }
   if (state.hasPendingDrip) {
     // Precisely-timed follow-up pending — answer side questions, never touch the schedule.
@@ -2939,14 +3229,17 @@ async function decidePhase2(input) {
     // A NEW concrete date ("Feb 17th", "next Friday") SUPERSEDES the pending schedule —
     // re-time the follow-up to land then. This is the documented sendDueWarmDrips supersede
     // rule (a real timeframe replaces the old one), applied at decision time.
-    const retimeHours = parseScheduleHours(message);
+    const retimeHours = statedHours(message, side);
     if (retimeHours !== null) {
-      return engageOrHold({ kind: 'pending_retimed', category: 'warm', reply: side.reply || "Sounds good, I'll follow up with you then!", hours: retimeHours });
+      return convoHasPropertySignal
+        ? restartDrip('pending_retimed', retimeHours, side.reply || "Sounds good, I'll follow up with you then!")
+        : engageOrHold({ kind: 'pending_retimed', category: 'warm', reply: side.reply || null, hours: retimeHours });
     }
     return engageOrHold({ kind: 'side_question', category: 'warm', reply: side.reply || null, preserveFollowUps: true });
   }
   if (P2_SOFT_COMMIT_RE.test(message)) {
-    return engageOrHold({ kind: 'soft_commit', category: 'warm', reply: 'Sounds good!', dripStep: 1, dripMissing: state.missingForDrip, hours: 48 });
+    return engageOrHold({ kind: 'soft_commit', category: 'warm', reply: 'Sounds good!', dripStep: 1,
+                          dripMissing: state.missingForDrip, hours: 24, dripCycle: state.dripCycle || 1 });
   }
   if (warmClass && !warmClass.reply) {
     return engageOrHold({ kind: 'need_both_silent', category: 'warm', bucket: warmClass.bucket });
@@ -3081,27 +3374,22 @@ async function routeInboundReply(conv, contact, msg, settings) {
         await autoSubmitLead(conv, contact, settings);
       }
 
-      // Timed follow-up for a stated timeframe ("coming in September", "next Friday"). Fires
-      // for follow_up AND warm — the LLM may classify a "property coming later" either way, and
-      // either should land a follow-up at the exact time. not_interested/hot_lead never reach
-      // here (scheduleHours is nulled for them in buildResult), so "gone til September" gets
-      // nothing, as intended.
-      if ((category === 'follow_up' || category === 'warm') && scheduleHours) {
-        if (db.countSentFollowUps(conv.id) >= 3) {
-          // Bounded: after 3 one-off follow-ups with no progress, stop looping and move on.
-          db.updateConversationCategory(conv.id, 'not_interested');
-          aiMarkRead(conv.id);
-          log(`AI: ${msg.from} → 3 follow-ups sent with no progress — moved to cold, main blast re-contacts later`);
-        } else {
-          const alreadyNudged = db.hasSentFollowUp(conv.id);
-          if (!alreadyNudged || scheduleHours > 24) {
-            const sendAt = Math.floor(Date.now() / 1000) + (scheduleHours * 3600);
-            db.createScheduledFollowUp(conv.id, contact.id, composeFollowUpBody(conv.id), sendAt);
-            log(`AI: ${msg.from} → scheduled follow-up in ${scheduleHours}h`);
-          } else {
-            log(`AI: ${msg.from} → follow-up already sent once, parking silently`);
-          }
-        }
+      // First reply carried a timeframe ("coming in September", "next Friday"). A stated
+      // date only means something when there is a PROPERTY behind it, which is exactly
+      // what warm means — so the drip start line moves to that date and the full 10-day
+      // run begins there. A follow_up (engaged, nothing to chase) gets no schedule at all;
+      // it used to book a one-shot nudge here, and that was the mechanism chasing the one
+      // category we had decided not to chase.
+      // not_interested/hot_lead never reach here (scheduleHours is nulled for them in
+      // buildResult), so "gone til September" still gets nothing, as intended.
+      if (category === 'warm' && scheduleHours) {
+        const missing = detectMissingForDrip(conv.id, '');
+        // Day-or-more delays get a randomised time of day; a same-day delay ("give me an
+        // hour") lands at the literal offset they asked for.
+        const sendAt = dripSendAt(scheduleHours, settings);
+        db.cancelWarmDrips(conv.id);
+        db.createWarmDrip(conv.id, contact.id, 1, missing, sendAt, 1);
+        log(`AI: ${msg.from} → drip start deferred ${scheduleHours}h to their stated timeframe (missing:${missing})`);
       }
 
       if (category !== 'hot_lead' && category !== 'warm') {
@@ -3131,6 +3419,8 @@ async function routeInboundReply(conv, contact, msg, settings) {
         hasSentFollowUp: db.hasSentFollowUp(conv.id),
         lastDripStep: db.getLastSentDripStep(conv.id),
         hasPendingDrip: db.hasPendingWarmDrip(conv.id),
+        dripCycle: Math.max(1, db.getDripCycle(conv.id)),
+        sentDrips: db.countSentDrips(conv.id),
         missingHeld: detectMissingHeld(conv.id),
         missingForDrip: detectMissingForDrip(conv.id, lastOutBody),
         pendingMarkerSent: p2outs.some(o => PENDING_MARKER_RE.test(o.body || '')),
@@ -3153,13 +3443,17 @@ async function routeInboundReply(conv, contact, msg, settings) {
 
       const send = async (text) => { if (text) await sendAiReplyRaw(conv, contact, text, settings); };
       const setCat = (c) => { if (c) db.updateConversationCategory(conv.id, c); };
-      const drip = (step, missing, hours) => {
-        const sendAt = Math.floor(Date.now() / 1000) + (hours * 3600);
-        db.createWarmDrip(conv.id, contact.id, step, missing, sendAt);
+      // Queue a drip touch `hours` from now. When the delay is a whole day or more the
+      // exact minute is randomised (dripSendAt) so the cadence never looks scheduled;
+      // short same-day delays land at the literal offset the agent asked for.
+      const drip = (step, missing, hours, cycle = 1) => {
+        db.createWarmDrip(conv.id, contact.id, step, missing, dripSendAt(hours, settings), cycle);
       };
-      const schedule = (body, hours) => {
-        const sendAt = Math.floor(Date.now() / 1000) + (hours * 3600);
-        db.createScheduledFollowUp(conv.id, contact.id, body, sendAt);
+      // Re-anchor: drop whatever chase is queued and start a fresh 10-day run at `hours`.
+      const restart = (d2) => {
+        db.cancelWarmDrips(conv.id);
+        db.cancelPendingFollowUps(conv.id);
+        drip(1, d2.dripMissing, d2.hours, d2.dripCycle || 1);
       };
       const goHot = async (trigger) => {
         setCat('hot_lead');
@@ -3171,12 +3465,15 @@ async function routeInboundReply(conv, contact, msg, settings) {
 
       switch (d.kind) {
         case 'seller_mia':
+          // Stalled, not dead. Acknowledge, then park the chase two weeks out and resume
+          // the drip from there instead of pestering while the seller is unreachable.
           await send(d.reply);
-          db.cancelWarmDrips(conv.id); db.cancelPendingFollowUps(conv.id);
-          setCat('follow_up');
-          schedule(d.followUpBody, d.hours);
-          aiMarkRead(conv.id); audit();
+          restart(d);
+          setCat('warm');
+          aiMarkRead(conv.id); audit({ hours: d.hours });
           break;
+        case 'property_dead':
+        case 'drip_strung_along':
         case 'wrong_number':
         case 'warm_went_cold':
         case 'chase_exhausted':
@@ -3213,7 +3510,7 @@ async function routeInboundReply(conv, contact, msg, settings) {
           if (conv.category !== 'warm') { setCat('warm'); conv.category = 'warm'; }
           await send(d.reply);
           db.cancelWarmDrips(conv.id); db.cancelPendingFollowUps(conv.id);
-          drip(d.dripStep, d.dripMissing, d.hours);
+          drip(d.dripStep, d.dripMissing, d.hours, d.dripCycle || 1);
           aiMarkRead(conv.id); audit({ step: d.dripStep, missing: d.dripMissing });
           break;
         case 'hot_llm_verdict':
@@ -3226,9 +3523,9 @@ async function routeInboundReply(conv, contact, msg, settings) {
           break;
         case 'timeframe_drip':
           await send(d.reply);
-          db.cancelWarmDrips(conv.id); db.cancelPendingFollowUps(conv.id);
-          drip(1, d.dripMissing, d.hours);
-          aiMarkRead(conv.id); audit({ hours: d.hours });
+          restart(d);
+          setCat('warm');
+          aiMarkRead(conv.id); audit({ hours: d.hours, cycle: d.dripCycle });
           break;
         case 'direct_gate_yes':
         case 'offmarket_yes':
@@ -3245,17 +3542,12 @@ async function routeInboundReply(conv, contact, msg, settings) {
           aiMarkRead(conv.id); audit();
           break;
         case 'fu_reply':
+          // follow_up = engaged but NO property signal. There is nothing to chase, so this
+          // answers the agent and parks. It used to book a scheduled_follow_up here, which
+          // was the only category that mechanism could ever fire on — chasing precisely the
+          // people we'd decided not to chase. A property signal now routes to warm instead
+          // and gets the drip, so this branch schedules nothing at all.
           await send(d.reply);
-          if (d.hours) {
-            if (state.sentFollowUps >= 3) {
-              setCat('not_interested');
-              log(`AI watchdog: ${msg.from} → 3 follow-ups sent with no progress — moved to cold`);
-            } else if (!state.hasSentFollowUp || d.hours > 24) {
-              schedule(composeFollowUpBody(conv.id), d.hours);
-            } else {
-              log(`AI watchdog: ${msg.from} → follow-up already sent once, parking silently`);
-            }
-          }
           aiMarkRead(conv.id); audit();
           break;
         case 'hot_details':
@@ -3274,7 +3566,7 @@ async function routeInboundReply(conv, contact, msg, settings) {
         case 'soft_commit':
         case 'side_question':
           await send(d.reply);
-          if (d.dripStep) drip(d.dripStep, d.dripMissing, d.hours);
+          if (d.dripStep) drip(d.dripStep, d.dripMissing, d.hours, d.dripCycle || 1);
           setCat('warm');
           aiMarkRead(conv.id); audit();
           break;
@@ -3294,11 +3586,14 @@ async function routeInboundReply(conv, contact, msg, settings) {
         case 'drip_sameday':
         case 'drip_future':
         case 'pending_retimed':
+          // The agent named a time. Re-anchor the whole 10-day run to that moment instead
+          // of booking a one-shot nudge, which is what these used to do: they scheduled a
+          // scheduled_follow_up and then set the conversation warm, and the sender skips
+          // warm, so the nudge could never fire and the agent's stated timing was ignored.
           await send(d.reply);
-          db.cancelPendingFollowUps(conv.id);
-          schedule(composeFollowUpBody(conv.id), d.hours);
+          restart(d);
           setCat('warm');
-          aiMarkRead(conv.id); audit({ hours: d.hours });
+          aiMarkRead(conv.id); audit({ hours: d.hours, cycle: d.dripCycle });
           break;
         case 'drip_continue':
           drip(d.dripStep, d.dripMissing, d.hours);
@@ -3391,19 +3686,26 @@ async function routeInboundReply(conv, contact, msg, settings) {
         log(`AI: ${msg.from} asked criteria after not_interested — ${p4Level >= 2 ? 'buy box sent, ' : ''}upgraded to follow_up`);
 
       } else if (bucket === 'tomorrow_promise' || bucket === 'check_back') {
-        db.updateConversationCategory(conv.id, 'follow_up');
-        if (p4Level >= 3) {
+        // Split by whether a PROPERTY was actually promised. "I'll have one for you
+        // tomorrow" is a property signal, so it becomes warm and gets the drip anchored to
+        // the promised moment. A bare "check back with me sometime" names nothing, so it
+        // stays follow_up with no chase, per the rule that we only chase a real signal.
+        // (Both previously booked a scheduled_follow_up, which could never fire.)
+        if (bucket === 'tomorrow_promise' && p4Level >= 3) {
           let followHours = parseScheduleHours(msg.body);
-          if (followHours === null) {
-            followHours = bucket === 'check_back' ? 24 : 48;
-          }
-          const sendAt = Math.floor(Date.now() / 1000) + (followHours * 3600);
-          db.createScheduledFollowUp(conv.id, contact.id, composeFollowUpBody(conv.id), sendAt);
+          if (followHours === null) followHours = 48;
+          const missing = detectMissingForDrip(conv.id, '');
+          const sendAt = dripSendAt(followHours, settings);
+          db.updateConversationCategory(conv.id, 'warm');
+          conv.category = 'warm';
+          db.cancelWarmDrips(conv.id);
+          db.createWarmDrip(conv.id, contact.id, 1, missing, sendAt, 1);
           db.logAudit('ai_routed', { phone: msg.from, bucket: 'promise_rescue', followHours });
-          log(`AI: ${msg.from} → ${bucket} after not_interested — upgraded to follow_up, scheduled in ${followHours}h`);
+          log(`AI: ${msg.from} → ${bucket} after not_interested — revived warm, drip starts in ${followHours}h`);
         } else {
+          db.updateConversationCategory(conv.id, 'follow_up');
           db.logAudit('ai_routed', { phone: msg.from, bucket: 'promise_rescue', level: p4Level, action: 'sorted_only' });
-          log(`AI L${p4Level}: ${msg.from} → ${bucket} after not_interested — upgraded to follow_up (no scheduling below L3)`);
+          log(`AI L${p4Level}: ${msg.from} → ${bucket} after not_interested — upgraded to follow_up (no chase)`);
         }
 
       } else if (bucket === 'property_signal') {
@@ -3673,16 +3975,24 @@ async function pollTwilio() {
     if (settings.aiEnabled === 'true' && settings.claudeApiKey && parseInt(settings.aiLevel || '3', 10) >= 3) {
       const needsDrip = db.getWarmConvsNeedingDrip();
       for (const row of needsDrip) {
+        // Lifetime guard: a conversation that already burned its touches (and was then
+        // moved back to warm by hand) must not silently re-enrol and start chasing again.
+        if (db.countSentDrips(row.id) >= DRIP_MAX_TOUCHES) continue;
         const missing = detectMissingForDrip(row.id, row.last_msg_body);
-        db.createWarmDrip(row.id, row.contact_id, 1, missing, Math.floor(Date.now() / 1000));
-        log(`Warm drip initiated for conv ${row.id} — missing:${missing}`);
+        const cycle = Math.max(1, db.getDripCycle(row.id));
+        db.createWarmDrip(row.id, row.contact_id, 1, missing, dripSendAt(0, settings), cycle);
+        log(`Warm drip initiated for conv ${row.id} — missing:${missing}, cycle ${cycle}`);
       }
     }
 
-    // ── Automated outbound senders run LAST, after inbound is fully processed ──
+    // ── Automated outbound runs LAST, after inbound is fully processed ──
     // Ordering is deliberate: any reply received while the app was off is fetched
-    // and processed above (cancelling its drip/nudge) BEFORE we send anything, so
-    // we never nudge someone on restart who already replied during downtime.
+    // and processed above (cancelling or re-anchoring its drip) BEFORE we send
+    // anything, so we never chase someone on restart who already replied during downtime.
+    //
+    // sendDueFollowUps is still called to DRAIN any scheduled_follow_up rows left pending
+    // from before the drip rework. Nothing writes to that table any more: the warm drip is
+    // now the single chase mechanism, and follow_up (no property signal) is never chased.
     await sendDueFollowUps(settings);
     await sendDueWarmDrips(settings);
 
@@ -4148,7 +4458,10 @@ ipcMain.handle('conversations:getMessages', (_, convId) => db.getMessages(convId
 ipcMain.handle('conversations:markRead', (_, convId) => { db.markConversationRead(convId); updateBadge(); return true; });
 ipcMain.handle('conversations:updateCategory', (_, { convId, category }) => {
   db.updateConversationCategory(convId, category);
-  if (category === 'not_interested') {
+  // Both cold states stop every automated chase. follow_up is included because the inbox
+  // renders it inside the Cold group: a human moving a thread there has decided it's dead,
+  // and the drip must not keep texting someone they personally closed.
+  if (category === 'not_interested' || category === 'follow_up') {
     db.cancelWarmDrips(convId);
     db.cancelPendingFollowUps(convId);
   }
@@ -4401,6 +4714,10 @@ ipcMain.handle('ai:simulate', async (_, { message, history, level, hasPendingFol
         missingHeld: held,
         missingForDrip: held !== 'both' ? held : detectMissingFromLastOutbound(lastOutBody),
         pendingMarkerSent: rawOuts.some(o => PENDING_MARKER_RE.test(o.body || '')),
+        // Sandbox threads always start on their first cycle with no touches spent, so a
+        // simulated timeline re-anchors the drip rather than tripping the strung-along cap.
+        dripCycle: 1,
+        sentDrips: 0,
       };
       const sbCategory = lastOutBody === 'Are you direct on these?' ? 'follow_up' : 'warm';
       const d = await decidePhase2({
@@ -4431,10 +4748,12 @@ ipcMain.handle('ai:simulate', async (_, { message, history, level, hasPendingFol
         make_offer_hot: '[Hot lead — no price after full 3-ask sequence, would auto-submit]',
         side_question_hot: '[Hot lead — would auto-submit and flag for your review]',
         side_question: d.reply ? '[Answered — follow-up already pending, schedule untouched]' : '[No reply — follow-up already pending, schedule untouched]',
-        drip_exhausted: '[No reply — drip cascade exhausted, going cold]',
+        drip_exhausted: '[No reply — 10-day drip finished with no answer, going cold]',
         need_price_silent: '[No reply — LLM chose silence, drip net covers]',
         need_address_silent: '[No reply — LLM chose silence, drip net covers]',
         need_both_silent: '[No reply — LLM chose silence, drip net covers]',
+        property_dead: '[No reply — property is sold or gone, chase stopped and parked cold]',
+        drip_strung_along: '[No reply — too many rolling promises with nothing delivered, parked cold]',
       };
       const replies = [];
       if (d.reply) replies.push(d.reply);

@@ -3,7 +3,22 @@ const originalFs = require('original-fs');
 const path = require('path');
 const { app, net } = require('electron');
 
-const RELEASES_API = 'https://api.github.com/repos/YOUR-GITHUB-USERNAME/YOUR-RELEASES-REPO/releases/latest'; // replace with your own
+const RELEASES_API = 'https://api.github.com/repos/sockhead360/agentcrm-releases/releases/latest';
+
+// Translate low-level DNS/connectivity failures into a plain-English message.
+// These mean we never reached the update server — it's a local internet problem.
+// Returns null if it's not a network error.
+function friendlyNetworkError(e) {
+  const code = e && e.code;
+  const NET_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH'];
+  const isOffline = NET_CODES.includes(code)
+    || /ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_|NETWORK_)/i.test(e?.message || '')
+    || /getaddrinfo|ENOTFOUND/i.test(e?.message || '');
+  if (isOffline) {
+    return new Error("No internet connection — couldn't reach the update server. Check your Wi-Fi/network and try again.");
+  }
+  return null;
+}
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
@@ -16,15 +31,23 @@ function httpsGet(url) {
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, data }));
     });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.on('error', (e) => reject(friendlyNetworkError(e) || e));
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error("Couldn't reach the update server — the request timed out. Check your internet connection and try again."));
+    });
   });
 }
 
 // Use Electron's net.fetch — Chromium's networking stack, handles GitHub
 // redirects, SSL, and system proxy exactly like the browser does.
 async function downloadFile(url, destPath, onProgress) {
-  const resp = await net.fetch(url);
+  let resp;
+  try {
+    resp = await net.fetch(url);
+  } catch (e) {
+    throw friendlyNetworkError(e) || e;
+  }
   if (!resp.ok) throw new Error(`Server returned HTTP ${resp.status}`);
 
   const total = parseInt(resp.headers.get('content-length') || '0', 10);

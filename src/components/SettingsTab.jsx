@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import SegmentCounter from './SegmentCounter.jsx';
 import { sanitizeForGSM7, analyzeMessage } from '../utils/segments.js';
 
-const DEFAULT_MESSAGE = "Hey {firstName}! I'm Chris, a local investor looking for fix and flip type properties that need a value add. Do you have anything for me to look at?";
+const DEFAULT_MESSAGE = "Hey {firstName}! I'm {myName}, a local investor looking for fix and flip type properties that need a value add. Do you have anything for me to look at?";
 
 export default function SettingsTab({ onSave }) {
   const [form, setForm] = useState({
@@ -11,6 +11,9 @@ export default function SettingsTab({ onSave }) {
     phoneNumber: '',
     messagingServiceSid: '',
     myName: 'Chris',
+    myLastName: '',
+    email: '',
+    notifyPhone: '',
     blastMessage: DEFAULT_MESSAGE,
     liveSmsEnabled: 'false',
     a2pApproved: 'false',
@@ -18,6 +21,10 @@ export default function SettingsTab({ onSave }) {
     dailyCap: '10000',
     firstBatchCap: '50',
     claudeApiKey: '',
+    voiceApiKeySid: '',
+    voiceApiKeySecret: '',
+    voiceTwimlAppSid: '',
+    voicePhoneNumber: '',
   });
   const [authTokenSet, setAuthTokenSet] = useState(false);
   const [claudeKeySet, setClaudeKeySet] = useState(false);
@@ -29,6 +36,8 @@ export default function SettingsTab({ onSave }) {
   const [updateState, setUpdateState] = useState('idle'); // idle | checking | upToDate | available | downloading | installing
   const [updateInfo, setUpdateInfo] = useState(null);
   const [downloadPct, setDownloadPct] = useState(0);
+  const [exportState, setExportState] = useState('idle'); // idle | exporting | done | error
+  const [exportMsg, setExportMsg] = useState('');
 
   useEffect(() => {
     window.api.getSettings().then(s => {
@@ -59,7 +68,8 @@ export default function SettingsTab({ onSave }) {
       setUpdateInfo(info);
       setUpdateState(info.hasUpdate ? 'available' : 'upToDate');
     } catch (e) {
-      setUpdateInfo({ error: e.message || 'Could not reach update server.' });
+      const msg = (e.message || 'Could not reach update server.').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
+      setUpdateInfo({ error: msg });
       setUpdateState('idle');
     }
   };
@@ -72,7 +82,7 @@ export default function SettingsTab({ onSave }) {
       await window.api.installUpdate({ downloadUrl: updateInfo.downloadUrl });
       setUpdateState('installing');
     } catch (e) {
-      const msg = (e.message || 'Update failed.').replace(/^Error invoking remote method '[^']+': /, '');
+      const msg = (e.message || 'Update failed.').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '');
       setUpdateInfo({ ...updateInfo, error: msg });
       setUpdateState('available');
     }
@@ -139,6 +149,25 @@ export default function SettingsTab({ onSave }) {
     } catch (e) {
       setClaudeStatus('error');
       setClaudeStatusMsg(e.message || 'Connection failed.');
+    }
+  };
+
+  const handleExportDb = async () => {
+    setExportState('exporting');
+    setExportMsg('Building transcript...');
+    try {
+      const res = await window.api.exportTranscripts();
+      if (res?.canceled) {
+        setExportState('idle');
+        setExportMsg('');
+        return;
+      }
+      setExportState('done');
+      setExportMsg(`✓ Exported ${res.conversations} conversations · ${res.messages} messages`);
+      setTimeout(() => { setExportState('idle'); setExportMsg(''); }, 6000);
+    } catch (e) {
+      setExportState('error');
+      setExportMsg(e.message || 'Export failed.');
     }
   };
 
@@ -236,11 +265,49 @@ export default function SettingsTab({ onSave }) {
             </div>
 
             <div className="settings-section">
+              <div className="settings-section-title">VOICE CALLING</div>
+              <div className="form-group">
+                <label className="form-label">API Key SID <span style={{ color: '#888', fontWeight: 400 }}>(starts with SK)</span></label>
+                <input className="form-input" value={form.voiceApiKeySid || ''} onChange={e => update('voiceApiKeySid', e.target.value)} placeholder="SKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">API Key Secret</label>
+                <input className="form-input" type="password" value={form.voiceApiKeySecret || ''} onChange={e => update('voiceApiKeySecret', e.target.value)} placeholder="••••••••••••••••••••••••••••••••" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">TwiML App SID <span style={{ color: '#888', fontWeight: 400 }}>(starts with AP)</span></label>
+                <input className="form-input" value={form.voiceTwimlAppSid || ''} onChange={e => update('voiceTwimlAppSid', e.target.value)} placeholder="APxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Caller ID <span style={{ color: '#888', fontWeight: 400 }}>(your Twilio number)</span></label>
+                <input className="form-input" value={form.voicePhoneNumber || ''} onChange={e => update('voicePhoneNumber', e.target.value)} placeholder="+18509403301" style={{ fontFamily: 'var(--font-mono)' }} />
+              </div>
+            </div>
+
+            <div className="settings-section">
               <div className="settings-section-title">OUTREACH PROFILE</div>
               <div className="form-group">
-                <label className="form-label">Your Name</label>
+                <label className="form-label">Your First Name</label>
                 <input className="form-input" value={form.myName || ''} onChange={e => update('myName', e.target.value)}
                   placeholder="Chris" style={{ maxWidth: 200 }} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Your Last Name</label>
+                <input className="form-input" value={form.myLastName || ''} onChange={e => update('myLastName', e.target.value)}
+                  placeholder="Last name" style={{ maxWidth: 200 }} />
+                <div className="form-hint">Used when agents ask for your last name or full name.</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">📧 Your Email</label>
+                <input className="form-input" value={form.email || ''} onChange={e => update('email', e.target.value)}
+                  placeholder="you@example.com" style={{ maxWidth: 300 }} />
+                <div className="form-hint">Used in the AI contact-request reply when an agent asks for your email.</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">📲 Lead Notification Number</label>
+                <input className="form-input" value={form.notifyPhone || ''} onChange={e => update('notifyPhone', e.target.value)}
+                  placeholder="7274120832  or  +17274120832" style={{ maxWidth: 260, fontFamily: 'var(--font-mono)' }} />
+                <div className="form-hint">Your personal cell — hot leads get texted here automatically.</div>
               </div>
               <div className="form-group">
                 <label className="form-label">🔔 Forward-to Cell Number</label>
@@ -264,7 +331,7 @@ export default function SettingsTab({ onSave }) {
             <div className="settings-section">
               <div className="settings-section-title">AI / CLAUDE CONFIGURATION</div>
               <div style={{ marginBottom: 10, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text2)', lineHeight: 1.7 }}>
-                Used to auto-sort incoming replies. Toggle AI on/off in the Conversations tab.
+                Powers the auto-router: every first reply is sorted into Hot / Warm / Cold and gets the matching templated reply. Edit the replies and flip the AI on/off in the 🤖 AI tab. Off means nothing runs.
               </div>
               <div className="form-group">
                 <label className="form-label">Claude API Key</label>
@@ -357,6 +424,25 @@ export default function SettingsTab({ onSave }) {
                   Installing... app will restart automatically
                 </div>
               )}
+            </div>
+
+            {/* Data Export */}
+            <div className="settings-section">
+              <div className="settings-section-title">DATA / EXPORT</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text2)', lineHeight: 1.6, marginBottom: 8 }}>
+                Export every conversation to a readable transcript (.txt), grouped by category — for analysis or training.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button className="btn btn-primary" onClick={handleExportDb}
+                  disabled={exportState === 'exporting'} style={{ alignSelf: 'flex-start' }}>
+                  {exportState === 'exporting' ? 'Exporting…' : '⬇ Export DB'}
+                </button>
+                {exportMsg && (
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: exportState === 'error' ? '#880000' : '#006600' }}>
+                    {exportMsg}
+                  </div>
+                )}
+              </div>
             </div>
 
           </div>

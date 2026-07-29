@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ChatWindow from './ChatWindow.jsx';
 import ResizableSplit from './ResizableSplit.jsx';
-import { play } from '../sounds.js';
+import EmojiPicker from './EmojiPicker.jsx';
+import { play, isMuted, setMuted } from '../sounds.js';
 
 // Mirrors twilio.normalizePhone for client-side preview (no IPC needed)
 function normalizePhone(raw) {
@@ -101,13 +102,18 @@ function NewConversationModal({ onClose, onCreated }) {
 
 const CATEGORIES = {
   new:            { label: 'NEW',          color: 'var(--title-b)' },
-  hot_lead:       { label: 'HOT LEADS',    color: '#cc4400'        },
-  follow_up:      { label: 'FOLLOW UPS',   color: '#886600'        },
-  callback:       { label: 'CALLBACKS',    color: '#553388'        },
-  not_interested: { label: 'COLD',         color: 'var(--win-dark)'},
+  caliente:       { label: 'RED HOT 🌶️',   color: '#aa1111'        },
+  hot_lead:       { label: 'HOT 🔥',        color: '#cc4400'        },
+  warm:           { label: 'WARM 🌤️',       color: '#bb8800'        },
+  not_interested: { label: 'COLD 🧊',       color: 'var(--win-dark)'},
 };
 
-const CAT_ORDER = ['new', 'hot_lead', 'follow_up', 'callback', 'not_interested'];
+const CAT_ORDER = ['new', 'caliente', 'hot_lead', 'warm', 'not_interested'];
+
+const HOT_EMOJI_PRIORITY = { '🟢': 0, '🟡': 1, '🔴': 2 };
+const hotEmojiRank = (conv) => HOT_EMOJI_PRIORITY[conv.emoji] ?? 3;
+
+const KEY_TO_EMOJI = { r: '🔴', y: '🟡', g: '🟢' };
 
 function timeAgo(dateStr) {
   if (!dateStr) return '';
@@ -122,12 +128,25 @@ function timeAgo(dateStr) {
 export default function ConversationsTab({ onReadUpdate }) {
   const [conversations, setConversations] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [collapsed, setCollapsed] = useState(new Set());
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('agentcrm_collapsed_cats') || '[]')); }
+    catch { return new Set(); }
+  });
   const [dragOverGroup, setDragOverGroup] = useState(null);
   const [showNewConv, setShowNewConv] = useState(false);
+  const [soundsMuted, setSoundsMuted] = useState(isMuted());
+  const [emojiPicker, setEmojiPicker] = useState(null); // { convId, x, y }
   const [searchQuery, setSearchQuery] = useState('');
+  // Backend full-text search across message bodies (so an address sent mid-thread is
+  // findable, not just the last message). ids = matching conv ids, snippets = the
+  // matching message body per conv (to show why it matched).
+  const [msgMatchIds, setMsgMatchIds] = useState(null);   // null = no backend results yet
+  const [msgMatchSnippets, setMsgMatchSnippets] = useState({});
   const [aiEnabled, setAiEnabled] = useState(false);
-  const draftsRef = useRef({});
+  const draftsRef = useRef((() => {
+    try { return JSON.parse(localStorage.getItem('agentcrm_drafts') || '{}'); }
+    catch { return {}; }
+  })());
   const dragConvId = useRef(null);
   const selectedRef = useRef(null);
   const archivedIds = useRef(new Set());
@@ -137,6 +156,24 @@ export default function ConversationsTab({ onReadUpdate }) {
   const loadConversations = useCallback(async () => {
     const data = await window.api.getConversations();
     setConversations(data.filter(c => !archivedIds.current.has(c.id)));
+  }, []);
+
+  // Refresh conversation data WITHOUT reordering the list. Used after the user
+  // sends a reply: a normal reload sorts by last_message_at DESC, which would
+  // bump the just-replied conversation to the top of its group and jump the
+  // buddy list out from under the user. Here we keep the existing display order
+  // and only update each conversation's fields in place (preview text, etc.).
+  // Brand-new conversations (e.g. a fresh inbound) are surfaced at the top.
+  const refreshPreservingOrder = useCallback(async () => {
+    const data = await window.api.getConversations();
+    const fresh = data.filter(c => !archivedIds.current.has(c.id));
+    const byId = new Map(fresh.map(c => [c.id, c]));
+    setConversations(prev => {
+      const kept = prev.filter(c => byId.has(c.id)).map(c => byId.get(c.id));
+      const keptIds = new Set(kept.map(c => c.id));
+      const added = fresh.filter(c => !keptIds.has(c.id));
+      return [...added, ...kept];
+    });
   }, []);
 
   useEffect(() => {
@@ -168,18 +205,18 @@ export default function ConversationsTab({ onReadUpdate }) {
   };
 
   const handleArchive = async (convId) => {
-    archivedIds.current.add(convId);
     setConversations(prev => prev.filter(c => c.id !== convId));
     if (selected?.id === convId) setSelected(null);
-    await window.api.archiveConversation(convId);
-    // DB committed — future getConversations won't include it, safe to remove from guard set
-    archivedIds.current.delete(convId);
+    await window.api.deleteConversation(convId);
   };
 
   const handleCategoryChange = async (convId, category) => {
     // Auto-advance to next conversation when categorizing the selected one
     if (selected?.id === convId) {
-      const allFlat = CAT_ORDER.flatMap(cat => conversations.filter(c => (c.category || 'new') === cat));
+      const allFlat = CAT_ORDER.flatMap(cat => {
+        if (cat === 'not_interested') return conversations.filter(c => c.category === 'not_interested' || c.category === 'follow_up');
+        return conversations.filter(c => (c.category || 'new') === cat);
+      });
       const idx = allFlat.findIndex(c => c.id === convId);
       const next = allFlat[idx + 1] || allFlat[idx - 1] || null;
       await window.api.updateCategory({ convId, category });
@@ -190,16 +227,36 @@ export default function ConversationsTab({ onReadUpdate }) {
       await window.api.updateCategory({ convId, category });
       setConversations(prev => prev.map(c => c.id === convId ? { ...c, category } : c));
     }
-    if (category === 'not_interested') play('buddyout');
-    else if (category === 'hot_lead') play('buddyin');
+    if (category === 'not_interested' || category === 'follow_up') play('buddyout');
+    else if (category === 'hot_lead' || category === 'caliente') play('buddyin');
   };
 
   const toggleCollapse = (catKey) => {
     setCollapsed(prev => {
       const next = new Set(prev);
       next.has(catKey) ? next.delete(catKey) : next.add(catKey);
+      localStorage.setItem('agentcrm_collapsed_cats', JSON.stringify([...next]));
       return next;
     });
+  };
+
+  const handleEmojiIconClick = (e, convId) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setEmojiPicker({ convId, x: rect.right + 4, y: rect.top });
+  };
+
+  const applyEmoji = useCallback(async (convId, emoji) => {
+    await window.api.setConversationEmoji({ convId, emoji });
+    setConversations(prev => prev.map(c => c.id === convId ? { ...c, emoji } : c));
+    setSelected(prev => prev?.id === convId ? { ...prev, emoji } : prev);
+  }, []);
+
+  const handleEmojiSelect = async (emoji) => {
+    if (!emojiPicker) return;
+    const { convId } = emojiPicker;
+    setEmojiPicker(null);
+    await applyEmoji(convId, emoji);
   };
 
   // Drag handlers
@@ -236,12 +293,106 @@ export default function ConversationsTab({ onReadUpdate }) {
     await window.api.saveSettings({ aiEnabled: next ? 'true' : 'false' });
   };
 
-  // Group conversations by category
+  // Debounced backend search over message bodies. Runs alongside the instant
+  // client-side field filter below — this augments it with mid-thread matches.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) { setMsgMatchIds(null); setMsgMatchSnippets({}); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const rows = await window.api.searchConversations(q);
+        if (cancelled) return;
+        const ids = new Set(rows.map(r => r.id));
+        const snips = {};
+        for (const r of rows) if (r.match_body) snips[r.id] = r.match_body;
+        setMsgMatchIds(ids);
+        setMsgMatchSnippets(snips);
+      } catch (_) { if (!cancelled) { setMsgMatchIds(new Set()); setMsgMatchSnippets({}); } }
+    }, 180);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [searchQuery]);
+
+  // A conversation matches the search if a contact field / last message matches
+  // (instant, client-side) OR the backend found a hit in an earlier message.
+  const matchesSearch = useCallback((c, qLower) => {
+    if ((c.name || '').toLowerCase().includes(qLower)) return true;
+    if ((c.phone || '').toLowerCase().includes(qLower)) return true;
+    if ((c.brokerage || '').toLowerCase().includes(qLower)) return true;
+    if ((c.last_message || '').toLowerCase().includes(qLower)) return true;
+    return msgMatchIds ? msgMatchIds.has(c.id) : false;
+  }, [msgMatchIds]);
+
+  // Flat ordered list of currently visible conversations (respects search + collapsed groups)
+  const getVisibleConvs = useCallback(() => {
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      return conversations.filter(c => matchesSearch(c, q));
+    }
+    return CAT_ORDER.flatMap(cat => {
+      if (collapsed.has(cat)) return [];
+      let convs;
+      if (cat === 'not_interested') {
+        convs = conversations.filter(c => c.category === 'not_interested' || c.category === 'follow_up');
+      } else {
+        convs = conversations.filter(c => (c.category || 'new') === cat);
+      }
+      if (cat === 'hot_lead') {
+        convs = [...convs].sort((a, b) => {
+          const pd = hotEmojiRank(a) - hotEmojiRank(b);
+          if (pd !== 0) return pd;
+          return new Date(b.last_message_at) - new Date(a.last_message_at);
+        });
+      }
+      return convs;
+    });
+  }, [conversations, searchQuery, collapsed, matchesSearch]);
+
+  // Arrow key navigation through the conversation list, plus R/Y/G to stamp the
+  // selected conversation with a red/yellow/green dot without opening the picker.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT' || el?.isContentEditable) return;
+
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const visible = getVisibleConvs();
+        if (!visible.length) return;
+        const idx = selected ? visible.findIndex(c => c.id === selected.id) : -1;
+        const next = e.key === 'ArrowDown'
+          ? visible[idx < visible.length - 1 ? idx + 1 : 0]
+          : visible[idx > 0 ? idx - 1 : visible.length - 1];
+        handleSelect(next);
+        return;
+      }
+
+      const dot = KEY_TO_EMOJI[e.key.toLowerCase()];
+      if (!dot || !selected || emojiPicker) return;
+      e.preventDefault();
+      applyEmoji(selected.id, dot);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, emojiPicker, getVisibleConvs, handleSelect, applyEmoji]);
+
+  // Scroll the active buddy-item into view whenever selection changes
+  useEffect(() => {
+    if (!selected) return;
+    requestAnimationFrame(() => {
+      document.querySelector('.buddy-item.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  }, [selected?.id]);
+
+  // Group conversations by category — follow_up merges into not_interested display group
   const groups = {};
   conversations.forEach(conv => {
     const cat = conv.category || 'new';
-    if (!groups[cat]) groups[cat] = [];
-    groups[cat].push(conv);
+    const displayCat = cat === 'follow_up' ? 'not_interested' : cat;
+    if (!groups[displayCat]) groups[displayCat] = [];
+    groups[displayCat].push(conv);
   });
 
   return (
@@ -252,7 +403,15 @@ export default function ConversationsTab({ onReadUpdate }) {
           <span style={{ fontSize: 10, color: 'var(--win-dark)' }}>
             {conversations.length} active · auto-refreshes every 30s
           </span>
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowNewConv(true)} title="Start a new conversation with any number">
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => { const next = !soundsMuted; setMuted(next); setSoundsMuted(next); }}
+            title={soundsMuted ? 'Notification sounds are muted — click to unmute' : 'Mute notification sounds (for when you\'re on the phone)'}
+            style={{ opacity: soundsMuted ? 1 : 0.75 }}
+          >
+            {soundsMuted ? '🔇 Muted' : '🔊 Sounds'}
+          </button>
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => setShowNewConv(true)} title="Start a new conversation with any number">
             + New
           </button>
           <button className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }}
@@ -299,12 +458,7 @@ export default function ConversationsTab({ onReadUpdate }) {
               </div>
             ) : searchQuery.trim() ? (() => {
               const q = searchQuery.trim().toLowerCase();
-              const filtered = conversations.filter(c =>
-                (c.name || '').toLowerCase().includes(q) ||
-                (c.phone || '').toLowerCase().includes(q) ||
-                (c.brokerage || '').toLowerCase().includes(q) ||
-                (c.last_message || '').toLowerCase().includes(q)
-              );
+              const filtered = conversations.filter(c => matchesSearch(c, q));
               if (filtered.length === 0) return (
                 <div style={{ padding: '16px 8px', textAlign: 'center', color: 'var(--win-dark)', fontSize: 11 }}>
                   No results for "{searchQuery}"
@@ -317,10 +471,27 @@ export default function ConversationsTab({ onReadUpdate }) {
                   onClick={() => handleSelect(conv)}
                   style={{ cursor: 'pointer' }}
                 >
-                  <span className="buddy-icon">🏃</span>
+                  <span
+                    className="buddy-icon"
+                    title="Tag this conversation"
+                    onClick={e => handleEmojiIconClick(e, conv.id)}
+                    style={{ cursor: 'pointer' }}
+                  >{conv.emoji || '🏃'}</span>
                   <div className="buddy-info">
                     <div className="buddy-name">{conv.name || conv.phone}</div>
-                    <div className="buddy-preview">{conv.last_message || conv.brokerage || '...'}</div>
+                    {(() => {
+                      // When the hit was inside an earlier message (not the last one),
+                      // preview that message so you can see the address/text you searched.
+                      const lc = q;
+                      const lastHas = (conv.last_message || '').toLowerCase().includes(lc);
+                      const snip = msgMatchSnippets[conv.id];
+                      const showSnip = !lastHas && snip;
+                      return (
+                        <div className="buddy-preview" style={showSnip ? { fontStyle: 'italic', color: 'var(--win-dark)' } : undefined}>
+                          {showSnip ? `“…${snip}”` : (conv.last_message || conv.brokerage || '...')}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="buddy-meta">
                     <span className="buddy-time">{timeAgo(conv.last_message_at)}</span>
@@ -329,8 +500,15 @@ export default function ConversationsTab({ onReadUpdate }) {
                 </div>
               ));
             })() : CAT_ORDER.map(catKey => {
-              const convs = groups[catKey];
+              let convs = groups[catKey];
               if (!convs || convs.length === 0) return null;
+              if (catKey === 'hot_lead') {
+                convs = [...convs].sort((a, b) => {
+                  const pd = hotEmojiRank(a) - hotEmojiRank(b);
+                  if (pd !== 0) return pd;
+                  return new Date(b.last_message_at) - new Date(a.last_message_at);
+                });
+              }
               const catInfo = CATEGORIES[catKey];
               const isCollapsed = collapsed.has(catKey);
               const isDropTarget = dragOverGroup === catKey;
@@ -369,7 +547,12 @@ export default function ConversationsTab({ onReadUpdate }) {
                       title="Drag to move to a different category"
                       style={{ cursor: 'grab' }}
                     >
-                      <span className="buddy-icon">🏃</span>
+                      <span
+                        className="buddy-icon"
+                        title="Tag this conversation"
+                        onClick={e => handleEmojiIconClick(e, conv.id)}
+                        style={{ cursor: 'pointer' }}
+                      >{conv.emoji || '🏃'}</span>
                       <div className="buddy-info">
                         <div className="buddy-name">{conv.name || conv.phone}</div>
                         <div className="buddy-preview">{conv.last_message || conv.brokerage || '...'}</div>
@@ -394,10 +577,14 @@ export default function ConversationsTab({ onReadUpdate }) {
               key={selected.id}
               conversation={selected}
               onCategoryChange={handleCategoryChange}
-              onMessageSent={loadConversations}
+              onMessageSent={refreshPreservingOrder}
               onArchive={handleArchive}
               draft={draftsRef.current[selected.id] || ''}
-              onDraftChange={(text) => { draftsRef.current[selected.id] = text; }}
+              onDraftChange={(text) => {
+                if (text) draftsRef.current[selected.id] = text;
+                else delete draftsRef.current[selected.id];
+                try { localStorage.setItem('agentcrm_drafts', JSON.stringify(draftsRef.current)); } catch {}
+              }}
             />
           ) : (
             <div className="chat-empty" style={{ flex: 1 }}>
@@ -426,6 +613,15 @@ export default function ConversationsTab({ onReadUpdate }) {
             await loadConversations();
             setSelected(conv);
           }}
+        />
+      )}
+
+      {emojiPicker && (
+        <EmojiPicker
+          x={emojiPicker.x}
+          y={emojiPicker.y}
+          onSelect={handleEmojiSelect}
+          onClose={() => setEmojiPicker(null)}
         />
       )}
     </>

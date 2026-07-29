@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { id: 'conversations', icon: '💬', label: 'Conversations' },
   { id: 'submit-lead',   icon: '📬', label: 'Submit a Lead' },
   { id: 'notes',         icon: '📝', label: 'Notes'         },
+  { id: 'ai',            icon: '🤖', label: 'AI'            },
   { id: 'settings',      icon: '⚙️', label: 'Settings'      },
 ];
 

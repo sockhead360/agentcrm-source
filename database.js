@@ -137,6 +137,16 @@ function init() {
     )
   `);
 
+  // Relay log — tracks Twilio SIDs of messages from the forward-to cell that have been
+  // relayed back to agents, preventing re-processing on subsequent polls
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS relay_log (
+      twilio_sid TEXT PRIMARY KEY,
+      relayed_to TEXT,
+      relayed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // Whitelisted phones always bypass exclusion/blast/stopped checks
   db.exec(`
     CREATE TABLE IF NOT EXISTS whitelisted_phones (
@@ -164,6 +174,35 @@ function init() {
   if (!convCols2.includes('archived')) {
     db.prepare("ALTER TABLE conversations ADD COLUMN archived INTEGER DEFAULT 0").run();
   }
+  if (!convCols2.includes('human_replied')) {
+    db.prepare("ALTER TABLE conversations ADD COLUMN human_replied INTEGER DEFAULT 0").run();
+  }
+  if (!convCols2.includes('emoji')) {
+    db.prepare("ALTER TABLE conversations ADD COLUMN emoji TEXT DEFAULT NULL").run();
+  }
+  if (!convCols2.includes('ai_handled_msg_id')) {
+    // AI progress marker, separate from the human unread badge: the AI no longer clears
+    // unread_count (humans review every thread manually), so clock-in triage needs its own
+    // signal for "the AI already routed up to this message" to avoid re-processing old
+    // messages on every clock-in.
+    db.prepare("ALTER TABLE conversations ADD COLUMN ai_handled_msg_id INTEGER DEFAULT 0").run();
+  }
+  // BACKFILL (runs every boot, idempotent): conversations handled under the OLD regime have
+  // ai_handled_msg_id=0 — without this, the first clock-in after upgrading would sweep EVERY
+  // historical thread whose last message is inbound (900+ on a real install) and re-route
+  // (potentially re-reply to) old messages. Faithful mapping of the old semantics: under the
+  // old system "handled" meant unread_count=0 (the AI marked reads), so any zero-unread conv
+  // with no marker gets stamped as handled-up-to-now. Convs with unread>0 keep marker 0 and
+  // remain triage-eligible — exactly the set the old query would have swept.
+  db.prepare(`
+    UPDATE conversations SET ai_handled_msg_id =
+      COALESCE((SELECT MAX(id) FROM messages WHERE conversation_id = conversations.id), 0)
+    WHERE COALESCE(ai_handled_msg_id, 0) = 0 AND COALESCE(unread_count, 0) = 0
+  `).run();
+
+  // Migration: 'callback' category retired (2026). Fold any existing callback
+  // conversations into 'follow_up' so they keep showing in the buddy list.
+  db.prepare("UPDATE conversations SET category = 'follow_up' WHERE category = 'callback'").run();
 
   // Migration: MMS media storage
   const msgCols = db.prepare("PRAGMA table_info(messages)").all().map(r => r.name);
@@ -212,6 +251,61 @@ function init() {
   if (!noteCols.includes('copy_count')) {
     db.prepare("ALTER TABLE notes ADD COLUMN copy_count INTEGER DEFAULT 0").run();
   }
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS scheduled_follow_ups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conv_id INTEGER NOT NULL,
+      contact_id INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      send_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+      sent_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending'
+    )
+  `).run();
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS warm_drip (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conv_id INTEGER NOT NULL,
+      contact_id INTEGER NOT NULL,
+      step INTEGER NOT NULL DEFAULT 1,
+      missing TEXT NOT NULL DEFAULT 'both',
+      send_at INTEGER NOT NULL,
+      sent_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )
+  `);
+
+  // Warm-drip v2 (10 consecutive daily touches, restartable). Two additive columns,
+  // guarded so existing installs migrate in place and old rows keep working:
+  //   cycle   — which run-through of the 10-day drip this touch belongs to. A timeline
+  //             from the agent ("next Tuesday") re-anchors the drip and starts a new
+  //             cycle; the cycle count is what bounds an agent stringing us along.
+  //   variant — index into DRIP_MESSAGES of the copy actually sent, so a restarted or
+  //             extended drip never repeats a line the agent has already seen.
+  const dripCols = db.prepare("PRAGMA table_info(warm_drip)").all().map(r => r.name);
+  if (!dripCols.includes('cycle')) {
+    db.prepare("ALTER TABLE warm_drip ADD COLUMN cycle INTEGER NOT NULL DEFAULT 1").run();
+  }
+  if (!dripCols.includes('variant')) {
+    db.prepare("ALTER TABLE warm_drip ADD COLUMN variant INTEGER DEFAULT NULL").run();
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_examples (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      agent_message TEXT NOT NULL,
+      exchange TEXT DEFAULT '[]',
+      keywords TEXT DEFAULT '',
+      source TEXT DEFAULT 'transcript',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_examples_dedup ON ai_examples(agent_message)`);
 
   // Crash recovery: any campaign stuck in 'running' gets paused on startup
   db.prepare("UPDATE campaigns SET status = 'paused' WHERE status = 'running'").run();
@@ -618,8 +712,63 @@ function getConversations() {
   `).all();
 }
 
+// Search non-archived conversations by contact fields OR any message body (so an
+// address the agent sent mid-thread — not just the last message — is findable).
+// Returns [{ id, match_body }] where match_body is the most recent message that
+// matched (null when the hit was on a contact field), used to show why it matched.
+function searchConversations(query) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const like = `%${q.replace(/[%_]/g, m => '\\' + m)}%`;
+  return db.prepare(`
+    SELECT cv.id,
+      (SELECT m.body FROM messages m
+        WHERE m.conversation_id = cv.id AND m.body LIKE @like ESCAPE '\\'
+        ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS match_body
+    FROM conversations cv
+    JOIN contacts c ON c.id = cv.contact_id
+    WHERE cv.archived = 0 AND cv.id IN (
+      SELECT cv2.id FROM conversations cv2 JOIN contacts c2 ON c2.id = cv2.contact_id
+        WHERE c2.name LIKE @like ESCAPE '\\' OR c2.phone LIKE @like ESCAPE '\\'
+           OR c2.brokerage LIKE @like ESCAPE '\\' OR c2.city LIKE @like ESCAPE '\\'
+           OR c2.state LIKE @like ESCAPE '\\'
+      UNION
+      SELECT conversation_id FROM messages WHERE body LIKE @like ESCAPE '\\'
+    )
+  `).all({ like });
+}
+
+// Full nested dump of every conversation (incl. archived) with all messages in
+// order — used by the "Export DB" button to build a readable transcript file.
+function getConversationsForExport() {
+  const convos = db.prepare(`
+    SELECT cv.id, cv.category, cv.archived, cv.created_at, cv.last_message_at,
+           c.name AS agent_name, c.first_name, c.phone, c.brokerage, c.city, c.state
+    FROM conversations cv
+    JOIN contacts c ON c.id = cv.contact_id
+    ORDER BY cv.id
+  `).all();
+  const msgStmt = db.prepare(`
+    SELECT direction, body, status, created_at, media_urls
+    FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC
+  `);
+  return convos.map(cv => ({ ...cv, messages: msgStmt.all(cv.id) }));
+}
+
 function archiveConversation(convId) {
   db.prepare('UPDATE conversations SET archived = 1 WHERE id = ?').run(convId);
+}
+
+function deleteConversation(convId) {
+  const conv = db.prepare('SELECT contact_id FROM conversations WHERE id = ?').get(convId);
+  // Messages are intentionally kept — their twilio_sids act as tombstones so Twilio
+  // doesn't re-deliver the same messages as "new" on the next poll cycle.
+  // They become orphaned (conversation deleted) and never surface in the UI.
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(convId);
+  if (conv) {
+    db.prepare('DELETE FROM campaign_contacts WHERE contact_id = ?').run(conv.contact_id);
+    db.prepare('DELETE FROM contacts WHERE id = ?').run(conv.contact_id);
+  }
 }
 
 function unarchiveConversation(convId) {
@@ -627,7 +776,7 @@ function unarchiveConversation(convId) {
 }
 
 function getOrCreateConversation(contactId) {
-  let conv = db.prepare('SELECT * FROM conversations WHERE contact_id = ?').get(contactId);
+  let conv = db.prepare('SELECT * FROM conversations WHERE contact_id = ? AND archived = 0').get(contactId);
   if (!conv) {
     const result = db.prepare(`
       INSERT INTO conversations (contact_id, last_message_at)
@@ -649,6 +798,22 @@ function getMessages(conversationId) {
   `).all(conversationId);
 }
 
+function markHumanReplied(conversationId) {
+  db.prepare('UPDATE conversations SET human_replied = 1 WHERE id = ?').run(conversationId);
+}
+
+function hasOutboundMessage(conversationId, body) {
+  return !!db.prepare(
+    `SELECT 1 FROM messages WHERE conversation_id = ? AND direction = 'outbound' AND body = ? LIMIT 1`
+  ).get(conversationId, body);
+}
+
+function getRecentMessages(conversationId, limit = 6) {
+  return db.prepare(
+    `SELECT direction, body FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`
+  ).all(conversationId, limit).reverse();
+}
+
 function addMessage(conversationId, body, direction, twilioSid, mediaUrls) {
   const mediaJson = (mediaUrls && mediaUrls.length > 0) ? JSON.stringify(mediaUrls) : null;
   const result = db.prepare(`
@@ -668,6 +833,15 @@ function addMessage(conversationId, body, direction, twilioSid, mediaUrls) {
 
 function markConversationRead(conversationId) {
   db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ?').run(conversationId);
+}
+
+// AI progress marker (does NOT touch unread_count — that badge belongs to humans now).
+// Records the latest message id as "AI has routed up to here" so clock-in triage never
+// re-processes a message the AI already handled.
+function markAiHandled(conversationId) {
+  db.prepare(`UPDATE conversations SET ai_handled_msg_id =
+    COALESCE((SELECT MAX(id) FROM messages WHERE conversation_id = ?), 0) WHERE id = ?`)
+    .run(conversationId, conversationId);
 }
 
 function updateConversationCategory(conversationId, category) {
@@ -695,8 +869,17 @@ function getTotalUnread() {
   return row ? (row.total || 0) : 0;
 }
 
+function setConversationEmoji(convId, emoji) {
+  db.prepare('UPDATE conversations SET emoji = ? WHERE id = ?').run(emoji || null, convId);
+}
+
 function getContactById(id) {
   return db.prepare('SELECT * FROM contacts WHERE id = ?').get(id);
+}
+
+function getLeadAddressForContact(contactId) {
+  const row = db.prepare("SELECT address FROM lead_submissions WHERE contact_id = ? AND address IS NOT NULL AND address != '' ORDER BY id DESC LIMIT 1").get(contactId);
+  return row?.address || null;
 }
 
 function findOrCreateManualContact(normalizedPhone, name) {
@@ -913,7 +1096,7 @@ function getColdMessageExamples() {
       )
       AND cv.id NOT IN (
         SELECT DISTINCT conversation_id FROM conversation_category_log
-        WHERE to_category IN ('hot_lead', 'follow_up', 'callback')
+        WHERE to_category IN ('caliente', 'hot_lead', 'warm', 'follow_up', 'callback')
       )
     ORDER BY RANDOM()
   `).all().map(r => r.body);
@@ -1029,6 +1212,302 @@ function deleteLeadSubmission(id) {
   db.prepare('DELETE FROM lead_submissions WHERE id = ?').run(id);
 }
 
+function getLatestLeadSubmissionForContact(contactId) {
+  return db.prepare(
+    `SELECT * FROM lead_submissions WHERE contact_id = ? ORDER BY created_at DESC LIMIT 1`
+  ).get(contactId);
+}
+
+function createScheduledFollowUp(convId, contactId, body, sendAt) {
+  db.prepare(
+    `INSERT INTO scheduled_follow_ups (conv_id, contact_id, body, send_at) VALUES (?, ?, ?, ?)`
+  ).run(convId, contactId, body, sendAt);
+}
+
+function getDueFollowUps() {
+  const now = Math.floor(Date.now() / 1000);
+  return db.prepare(
+    `SELECT * FROM scheduled_follow_ups WHERE status = 'pending' AND send_at <= ?`
+  ).all(now);
+}
+
+function markFollowUpSent(id) {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`UPDATE scheduled_follow_ups SET status = 'sent', sent_at = ? WHERE id = ?`).run(now, id);
+}
+
+function markFollowUpSkipped(id) {
+  db.prepare(`UPDATE scheduled_follow_ups SET status = 'skipped' WHERE id = ?`).run(id);
+}
+
+function hasSentFollowUp(convId) {
+  return !!db.prepare(`SELECT id FROM scheduled_follow_ups WHERE conv_id = ? AND status = 'sent' LIMIT 1`).get(convId);
+}
+
+function countSentFollowUps(convId) {
+  return db.prepare(`SELECT COUNT(*) as c FROM scheduled_follow_ups WHERE conv_id = ? AND status = 'sent'`).get(convId).c;
+}
+
+// ── Warm drip (automated ghost-chaser for warm convs that go silent) ──────────
+
+function createWarmDrip(convId, contactId, step, missing, sendAt, cycle = 1, variant = null) {
+  db.prepare(
+    `INSERT INTO warm_drip (conv_id, contact_id, step, missing, send_at, cycle, variant) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(convId, contactId, step, missing, sendAt, cycle, variant);
+}
+
+// Highest cycle this conversation has reached (0 if it has never been dripped).
+// A cycle is one full 10-touch run; a timeline from the agent starts the next one.
+function getDripCycle(convId) {
+  const row = db.prepare(`SELECT MAX(cycle) as c FROM warm_drip WHERE conv_id = ?`).get(convId);
+  return row?.c || 0;
+}
+
+// Copy variants already SENT to this conversation, so a restarted or extended drip
+// never reuses a line the agent has already read. Repetition is the loudest bot tell.
+function getUsedDripVariants(convId) {
+  return db.prepare(
+    `SELECT DISTINCT variant FROM warm_drip WHERE conv_id = ? AND status = 'sent' AND variant IS NOT NULL`
+  ).all(convId).map(r => r.variant);
+}
+
+// Total touches actually delivered across every cycle — the lifetime ceiling that stops
+// an endless chase even if the agent keeps supplying fresh timelines.
+function countSentDrips(convId) {
+  return db.prepare(`SELECT COUNT(*) as c FROM warm_drip WHERE conv_id = ? AND status = 'sent'`).get(convId)?.c || 0;
+}
+
+function getDueWarmDrips() {
+  const now = Math.floor(Date.now() / 1000);
+  return db.prepare(
+    `SELECT * FROM warm_drip WHERE status = 'pending' AND send_at <= ? ORDER BY send_at ASC`
+  ).all(now);
+}
+
+function markWarmDripSent(id, variant = null) {
+  const now = Math.floor(Date.now() / 1000);
+  // Record which copy variant actually went out so later touches can avoid repeating it.
+  db.prepare(`UPDATE warm_drip SET status = 'sent', sent_at = ?, variant = COALESCE(?, variant) WHERE id = ?`)
+    .run(now, variant, id);
+}
+
+function cancelWarmDrips(convId) {
+  db.prepare(`UPDATE warm_drip SET status = 'cancelled' WHERE conv_id = ? AND status = 'pending'`).run(convId);
+}
+
+function getLastSentDripStep(convId) {
+  const row = db.prepare(`SELECT MAX(step) as step FROM warm_drip WHERE conv_id = ? AND status = 'sent'`).get(convId);
+  return row?.step ?? null;
+}
+
+// True if a precisely-timed follow-up (e.g. a timeframe deferral drip) is already
+// scheduled and hasn't fired yet — used to avoid double-scheduling or resetting it
+// when a later, unrelated agent reply comes in before it's due.
+function hasPendingWarmDrip(convId) {
+  const row = db.prepare(`SELECT 1 FROM warm_drip WHERE conv_id = ? AND status = 'pending' LIMIT 1`).get(convId);
+  return !!row;
+}
+
+// Crash-recovery sweep: find first-reply conversations that were saved but never
+// AI-routed (the 6s in-memory debounce timer died when the app closed). A routed
+// first reply ALWAYS leaves 'new' (Phase 1 always sets a category), so category='new'
+// with an inbound last message = orphaned. Age filter >120s avoids racing any live
+// debounce timer during normal operation.
+function getOrphanedNewConversations() {
+  return db.prepare(`
+    WITH last_msg AS (
+      SELECT m.conversation_id, m.body, m.direction, m.media_urls, m.created_at
+      FROM messages m
+      WHERE m.id = (SELECT MAX(id) FROM messages WHERE conversation_id = m.conversation_id)
+    )
+    SELECT c.id, c.contact_id, lm.body AS last_body, lm.media_urls AS last_media
+    FROM conversations c
+    JOIN last_msg lm ON lm.conversation_id = c.id
+    WHERE c.category = 'new'
+      AND COALESCE(c.archived, 0) = 0
+      AND COALESCE(c.human_replied, 0) = 0
+      AND lm.direction = 'inbound'
+      AND (CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', lm.created_at) AS INTEGER)) > 120
+  `).all();
+}
+
+function cancelPendingFollowUps(convId) {
+  db.prepare(`UPDATE scheduled_follow_ups SET status = 'skipped' WHERE conv_id = ? AND status = 'pending'`).run(convId);
+}
+
+// Warm conversations that have gone quiet for 24h and have no drip queued.
+// NOTE: deliberately does NOT require the last message to be outbound. Phase 2's silent
+// decisions (need_price_silent, need_both_silent, a side question answered with nothing)
+// park a thread warm while the agent's message is still the last one — under the old
+// outbound-only filter those threads never enrolled and were never chased again, which
+// stranded real leads for weeks. Warm means a property signal exists, so warm always drips.
+function getWarmConvsNeedingDrip() {
+  return db.prepare(`
+    WITH last_msg AS (
+      SELECT m.conversation_id, m.body, m.direction, m.created_at
+      FROM messages m
+      WHERE m.id = (SELECT MAX(id) FROM messages WHERE conversation_id = m.conversation_id)
+    )
+    SELECT c.id, c.contact_id, lm.body AS last_msg_body
+    FROM conversations c
+    JOIN last_msg lm ON lm.conversation_id = c.id
+    WHERE c.category = 'warm'
+      AND COALESCE(c.archived, 0) = 0
+      AND COALESCE(c.human_replied, 0) = 0
+      AND (CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', lm.created_at) AS INTEGER)) > 86400
+      AND NOT EXISTS (SELECT 1 FROM warm_drip wd WHERE wd.conv_id = c.id AND wd.status = 'pending')
+  `).all();
+}
+
+function countOutboundMessages(convId) {
+  const row = db.prepare(`SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND direction = 'outbound'`).get(convId);
+  return row?.cnt || 0;
+}
+
+// Per-recipient circuit breaker: how many outbound messages (ANY source — AI, drip,
+// follow-up, manual, blast) have gone to this phone's conversation(s) since sinceIso.
+// Used by assertCanSend as the hard backstop against runaway texting of one number.
+// Matches the stored contacts.phone format (same lookup the rest of the app uses).
+function countRecentOutboundToPhone(phone, sinceIso) {
+  const contact = db.prepare('SELECT id FROM contacts WHERE phone = ?').get(phone);
+  if (!contact) return 0;
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    WHERE c.contact_id = ?
+      AND m.direction = 'outbound'
+      AND m.created_at > ?
+  `).get(contact.id, sinceIso);
+  return row?.cnt || 0;
+}
+
+// Outbound count for the AI conversation-budget cap, EXCLUDING automated warm-drip
+// messages. The drip is a ghost-chaser, not part of the human back-and-forth, so its
+// touches shouldn't burn the 10-message cap. Each sent drip row maps to exactly one
+// outbound message, so subtracting the sent-drip count is exact.
+function countOutboundMessagesExcludingDrips(convId) {
+  const total = db.prepare(
+    `SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND direction = 'outbound'`
+  ).get(convId)?.cnt || 0;
+  const dripSends = db.prepare(
+    `SELECT COUNT(*) as cnt FROM warm_drip WHERE conv_id = ? AND status = 'sent'`
+  ).get(convId)?.cnt || 0;
+  return Math.max(0, total - dripSends);
+}
+
+// ── AI training example bank ─────────────────────────────────────────────────
+
+function batchInsertAiExamples(examples) {
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO ai_examples (category, agent_message, exchange, keywords, source) VALUES (?, ?, ?, ?, ?)`
+  );
+  let inserted = 0;
+  db.transaction((exs) => {
+    for (const ex of exs) {
+      const info = stmt.run(ex.category, ex.agent_message, JSON.stringify(ex.exchange || []), ex.keywords || '', ex.source || 'transcript');
+      if (info.changes > 0) inserted++;
+    }
+  })(examples);
+  return inserted;
+}
+
+function clearAiExamples(source) {
+  if (source) {
+    db.prepare(`DELETE FROM ai_examples WHERE source = ?`).run(source);
+  } else {
+    db.prepare(`DELETE FROM ai_examples`).run();
+  }
+}
+
+function countAiExamples() {
+  return db.prepare(`SELECT category, COUNT(*) as count FROM ai_examples GROUP BY category`).all();
+}
+
+function getRelevantExamples(msgBody, perCategory) {
+  const all = db.prepare(
+    `SELECT id, category, agent_message, exchange, keywords FROM ai_examples`
+  ).all();
+  if (!all.length) return [];
+
+  const msgWords = new Set(
+    msgBody.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2)
+  );
+
+  const scored = all.map(ex => ({
+    ...ex,
+    _score: (ex.keywords || '').split(' ').filter(w => msgWords.has(w)).length,
+  }));
+
+  const byCategory = {};
+  for (const ex of scored) {
+    if (!byCategory[ex.category]) byCategory[ex.category] = [];
+    byCategory[ex.category].push(ex);
+  }
+
+  const result = [];
+  for (const exs of Object.values(byCategory)) {
+    // Sort by relevance score, use a random tiebreaker so repeated calls vary
+    const pool = exs
+      .sort((a, b) => b._score - a._score)
+      .slice(0, perCategory * 3); // take 3× the quota as a pool
+    pool.sort((a, b) => {
+      const d = b._score - a._score;
+      return d !== 0 ? d : Math.random() - 0.5;
+    });
+    result.push(...pool.slice(0, perCategory));
+  }
+
+  return result;
+}
+
+function getConversationById(convId) {
+  return db.prepare('SELECT * FROM conversations WHERE id = ?').get(convId);
+}
+
+function hasInboundSince(convId, timestamp) {
+  return !!db.prepare(
+    `SELECT 1 FROM messages WHERE conversation_id = ? AND direction = 'inbound' AND created_at > ? LIMIT 1`
+  ).get(convId, timestamp);
+}
+
+// Conversations the agent replied to but the human never handled — used by the AI
+// clock-in triage. "Unhandled" = still unread (you never opened it: opening marks it
+// read), the agent spoke last (last message is inbound, so you didn't reply by hand),
+// not RED HOT, not human-taken-over, not archived.
+function getUnhandledInboundConvs() {
+  // "Unhandled" = last message is inbound AND newer than the AI's progress marker
+  // (ai_handled_msg_id). unread_count is no longer part of this check — the AI doesn't
+  // clear it anymore (the badge belongs to humans), so using it here would re-triage
+  // every AI-handled thread on each clock-in.
+  return db.prepare(`
+    SELECT c.id, c.contact_id
+    FROM conversations c
+    WHERE COALESCE(c.archived, 0) = 0
+      AND COALESCE(c.human_replied, 0) = 0
+      AND c.category != 'caliente'
+      AND (
+        SELECT m.id FROM messages m
+        WHERE m.conversation_id = c.id
+        ORDER BY m.id DESC LIMIT 1
+      ) > COALESCE(c.ai_handled_msg_id, 0)
+      AND (
+        SELECT m.direction FROM messages m
+        WHERE m.conversation_id = c.id
+        ORDER BY m.id DESC LIMIT 1
+      ) = 'inbound'
+  `).all();
+}
+
+function getLastInboundMessage(convId) {
+  return db.prepare(
+    `SELECT * FROM messages WHERE conversation_id = ? AND direction = 'inbound' ORDER BY id DESC LIMIT 1`
+  ).get(convId);
+}
+
 function getCampaignConversationStats(campaignId) {
   // Current category counts
   const rows = db.prepare(`
@@ -1073,14 +1552,16 @@ function getCampaignConversationStats(campaignId) {
   `).get(campaignId);
 
   return {
+    caliente:       cats.caliente       || 0,
     hot_lead:       cats.hot_lead       || 0,
+    warm:           cats.warm           || 0,
     follow_up:      cats.follow_up      || 0,
-    callback:       cats.callback       || 0,
     not_interested: cats.not_interested || 0,
     newReplies:     newReplies.count,
+    initial_caliente:       initCats.caliente       || 0,
     initial_hot_lead:       initCats.hot_lead       || 0,
+    initial_warm:           initCats.warm           || 0,
     initial_follow_up:      initCats.follow_up      || 0,
-    initial_callback:       initCats.callback       || 0,
     initial_not_interested: initCats.not_interested || 0,
   };
 }
@@ -1109,6 +1590,25 @@ function getLeadPipelineStats() {
     FROM lead_submissions WHERE tier1_sent_at IS NOT NULL
   `).get();
   return row || { total: 0, no_go: 0, contracts: 0, closed: 0 };
+}
+
+function isRelaySid(sid) {
+  return !!db.prepare('SELECT 1 FROM relay_log WHERE twilio_sid = ?').get(sid);
+}
+
+function addRelayLog(sid, relayedTo) {
+  db.prepare('INSERT OR IGNORE INTO relay_log (twilio_sid, relayed_to) VALUES (?, ?)').run(sid, relayedTo);
+}
+
+function getForwardingConversations() {
+  return db.prepare(`
+    SELECT cv.id, cv.contact_id, cv.last_message_at, c.phone, c.name, c.first_name
+    FROM conversations cv
+    JOIN contacts c ON c.id = cv.contact_id
+    WHERE cv.forward_enabled = 1
+    AND COALESCE(cv.archived, 0) = 0
+    ORDER BY cv.last_message_at DESC
+  `).all();
 }
 
 function getAllFollowUpContacts() {
@@ -1192,12 +1692,12 @@ module.exports = {
   getCampaigns, createCampaign, deleteCampaign, getCampaignContacts, getCampaignBlastPreview,
   isPhoneSentInCampaign, recordBlastSent, recordBlastFailed, completeCampaign, updateCampaignStatus,
   getCampaignSids, updateDeliveryStatus, refreshCampaignDeliveredCount, getCampaignOptOutCount,
-  getContactById,
+  getContactById, getLeadAddressForContact,
   findOrCreateManualContact, createManualConversation,
   resetList,
   resetCampaign,
-  getConversations, getOrCreateConversation, getMessages, archiveConversation, unarchiveConversation,
-  addMessage, markConversationRead, updateConversationCategory, setConversationForward, isConversationForwarding, getTotalUnread,
+  getConversations, searchConversations, getConversationsForExport, getOrCreateConversation, getMessages, getRecentMessages, hasOutboundMessage, markHumanReplied, archiveConversation, unarchiveConversation, deleteConversation,
+  addMessage, markConversationRead, markAiHandled, updateConversationCategory, setConversationForward, isConversationForwarding, getTotalUnread, setConversationEmoji,
   addStoppedNumber, isPhoneStopped, markImportedExclusions,
   getColdMessageExamples,
   renameContact,
@@ -1205,7 +1705,13 @@ module.exports = {
   syncAllCampaignMessages,
   getOverviewStats,
   runDemo,
-  createLeadSubmission, getLeadSubmissions, getLeadSubmission, updateLeadSubmission, deleteLeadSubmission, getConversationMedia,
+  createLeadSubmission, getLeadSubmissions, getLeadSubmission, updateLeadSubmission, deleteLeadSubmission, getLatestLeadSubmissionForContact, getConversationMedia,
+  createScheduledFollowUp, getDueFollowUps, markFollowUpSent, markFollowUpSkipped, hasSentFollowUp, countSentFollowUps, countOutboundMessages, countOutboundMessagesExcludingDrips, countRecentOutboundToPhone,
+  createWarmDrip, getDueWarmDrips, markWarmDripSent, cancelWarmDrips, getLastSentDripStep, hasPendingWarmDrip, getOrphanedNewConversations, cancelPendingFollowUps, getWarmConvsNeedingDrip,
+  getDripCycle, getUsedDripVariants, countSentDrips,
+  batchInsertAiExamples, clearAiExamples, countAiExamples, getRelevantExamples,
+  getConversationById, hasInboundSince, getUnhandledInboundConvs, getLastInboundMessage,
+  isRelaySid, addRelayLog, getForwardingConversations,
   getAllFollowUpContacts, getFollowUpContactsForCampaign, getCampaignConversationStats, getLeadKPIsByCampaign, getLeadPipelineStats,
   getConversationDepthStats,
 };

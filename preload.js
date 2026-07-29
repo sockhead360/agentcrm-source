@@ -19,14 +19,17 @@ contextBridge.exposeInMainWorld('api', {
 
   // Conversations
   getConversations: () => ipcRenderer.invoke('conversations:getAll'),
+  searchConversations: (query) => ipcRenderer.invoke('conversations:search', query),
   getMessages: (convId) => ipcRenderer.invoke('conversations:getMessages', convId),
   sendMessage: (data) => ipcRenderer.invoke('conversations:sendMessage', data),
   markRead: (convId) => ipcRenderer.invoke('conversations:markRead', convId),
   startManualConversation: (data) => ipcRenderer.invoke('conversations:startManual', data),
   updateCategory: (data) => ipcRenderer.invoke('conversations:updateCategory', data),
   archiveConversation: (convId) => ipcRenderer.invoke('conversations:archive', convId),
+  deleteConversation: (convId) => ipcRenderer.invoke('conversations:delete', convId),
   setConversationForward: (data) => ipcRenderer.invoke('conversations:setForward', data),
   getTotalUnread: () => ipcRenderer.invoke('conversations:getTotalUnread'),
+  setConversationEmoji: (data) => ipcRenderer.invoke('conversations:setEmoji', data),
 
   deleteCampaign: (id) => ipcRenderer.invoke('campaigns:delete', id),
   refreshCampaignStats: (id) => ipcRenderer.invoke('campaigns:refreshStats', id),
@@ -49,6 +52,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Claude AI
   verifyClaudeKey: (key) => ipcRenderer.invoke('claude:verify', key),
+  aiSimulate: (data) => ipcRenderer.invoke('ai:simulate', data),
+  importAiExamples: () => ipcRenderer.invoke('ai:importExamples'),
+  getAiExampleStats: () => ipcRenderer.invoke('ai:getExampleStats'),
+  clearAiExamples: () => ipcRenderer.invoke('ai:clearExamples'),
 
   // Updater
   getVersion: () => ipcRenderer.invoke('updater:getVersion'),
@@ -92,8 +99,15 @@ contextBridge.exposeInMainWorld('api', {
   getCampaignLeadKPIs: (id) => ipcRenderer.invoke('campaigns:getLeadKPIs', id),
   getCampaignConvStats: (id) => ipcRenderer.invoke('campaigns:getConvStats', id),
 
+  // Voice
+  requestMicPermission: () => ipcRenderer.invoke('voice:requestMicPermission'),
+  getVoiceToken: () => ipcRenderer.invoke('voice:getToken'),
+  logCall: (data) => ipcRenderer.invoke('voice:logCall', data),
+
   // Shell
   shellOpenExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  downloadAllMedia: (data) => ipcRenderer.invoke('media:downloadAll', data),
+  exportTranscripts: () => ipcRenderer.invoke('db:exportTranscripts'),
 
   // Events from main
   onNewMessages: (cb) => {

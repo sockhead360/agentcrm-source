@@ -99,10 +99,10 @@ function NewRepliesBar({ count, onClick }) {
 
 function PipelineRows({ convStats, onClick }) {
   const COLS = [
-    { key: 'not_interested', icon: '❄️', label: 'Cold',      color: '#555555' },
-    { key: 'callback',       icon: '📞', label: 'Callback',  color: '#004488' },
-    { key: 'follow_up',      icon: '⏰', label: 'Follow Up', color: '#884400' },
-    { key: 'hot_lead',       icon: '🔥', label: 'Hot Leads', color: '#880000' },
+    { key: 'not_interested', icon: '🧊', label: 'Cold',      color: '#555555' },
+    { key: 'warm',           icon: '🌤️', label: 'Warm',      color: '#bb8800' },
+    { key: 'hot_lead',       icon: '🔥', label: 'Hot',       color: '#cc4400' },
+    { key: 'caliente',       icon: '🌶️', label: 'Red Hot',   color: '#aa1111' },
   ];
 
   const hasHistory = convStats && COLS.some(c =>
@@ -118,10 +118,12 @@ function PipelineRows({ convStats, onClick }) {
         </div>
       )}
       <div style={{ display: 'flex', gap: 4, marginBottom: hasHistory ? 4 : 0 }}>
-        {COLS.map(c => (
-          <GridStat key={c.key} icon={c.icon} label={c.label} color={c.color}
-            value={convStats?.[c.key] ?? 0} onClick={onClick} />
-        ))}
+        {COLS.map(c => {
+          const val = c.key === 'not_interested'
+            ? (convStats?.not_interested ?? 0) + (convStats?.follow_up ?? 0)
+            : (convStats?.[c.key] ?? 0);
+          return <GridStat key={c.key} icon={c.icon} label={c.label} color={c.color} value={val} onClick={onClick} />;
+        })}
       </div>
 
       {/* Initially row — only shown once any lead has been recategorized */}
@@ -178,7 +180,7 @@ function AllFollowUpBlastModal({ preview, onConfirm, onCancel }) {
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onCancel()}>
       <div className="modal" style={{ maxWidth: 480 }}>
         <div className="modal-header">
-          <span className="modal-title">⏰ FOLLOW-UP BLAST — ALL CAMPAIGNS</span>
+          <span className="modal-title">🧊 COLD BLAST — ALL CAMPAIGNS</span>
           <button className="modal-close" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
@@ -192,7 +194,7 @@ function AllFollowUpBlastModal({ preview, onConfirm, onCancel }) {
               {preview.followUpCount}
             </div>
             <div style={{ fontSize: 11, fontFamily: 'var(--font-ui)', color: 'var(--win-dark)', marginTop: 4 }}>
-              contact{preview.followUpCount !== 1 ? 's' : ''} marked <strong>Follow-Up</strong> across all campaigns
+              contact{preview.followUpCount !== 1 ? 's' : ''} marked <strong>Cold</strong> across all campaigns
             </div>
           </div>
 
@@ -212,7 +214,7 @@ function AllFollowUpBlastModal({ preview, onConfirm, onCancel }) {
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 8px', cursor: 'pointer', background: 'var(--win-gray)', userSelect: 'none' }}
               >
                 <span style={{ fontFamily: 'var(--font-ui)', fontSize: 11, fontWeight: 'bold' }}>
-                  {listOpen ? '▼' : '▶'} All Follow-Up Contacts ({preview.contacts.length})
+                  {listOpen ? '▼' : '▶'} All Cold Contacts ({preview.contacts.length})
                 </span>
                 <span style={{ fontSize: 10, color: 'var(--win-dark)', fontFamily: 'var(--font-ui)' }}>{listOpen ? 'collapse' : 'expand to review'}</span>
               </div>
@@ -234,7 +236,7 @@ function AllFollowUpBlastModal({ preview, onConfirm, onCancel }) {
           )}
 
           <div className="form-group">
-            <label className="form-label">Follow-Up Message</label>
+            <label className="form-label">Cold Blast Message</label>
             <textarea
               className="form-textarea"
               value={message}
@@ -333,9 +335,10 @@ function OverviewPanel({ onNavigate }) {
 
   const leads = stats?.leads || {};
   const initialLeads = stats?.initialLeads || {};
+  const caliente    = leads.caliente       || 0;
   const hotLeads    = leads.hot_lead       || 0;
+  const warm        = leads.warm           || 0;
   const followUp    = leads.follow_up      || 0;
-  const callback    = leads.callback       || 0;
   const notInt      = leads.not_interested || 0;
   const newPending  = stats?.newRepliesPending || 0;
   const lp          = stats?.leadPipeline || {};
@@ -396,10 +399,11 @@ function OverviewPanel({ onNavigate }) {
       <NewRepliesBar count={newPending} onClick={() => onNavigate?.('conversations')} />
       <PipelineRows
         convStats={{
-          hot_lead: hotLeads, follow_up: followUp, callback, not_interested: notInt,
+          caliente, hot_lead: hotLeads, warm, follow_up: followUp, not_interested: notInt,
+          initial_caliente: initialLeads.caliente || 0,
           initial_hot_lead: initialLeads.hot_lead || 0,
+          initial_warm: initialLeads.warm || 0,
           initial_follow_up: initialLeads.follow_up || 0,
-          initial_callback: initialLeads.callback || 0,
           initial_not_interested: initialLeads.not_interested || 0,
         }}
         onClick={() => onNavigate?.('conversations')}
@@ -424,7 +428,7 @@ function OverviewPanel({ onNavigate }) {
           background: 'var(--win-white)', padding: '8px 10px', marginTop: 4, marginBottom: 4,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
-            <span style={{ fontWeight: 'bold' }}>{allBlastState.done ? '✓ All follow-ups sent' : `Sending follow-ups...`}</span>
+            <span style={{ fontWeight: 'bold' }}>{allBlastState.done ? '✓ Cold blast sent' : `Sending cold blast...`}</span>
             <span style={{ color: 'var(--win-dark)' }}>{allBlastState.sent} sent · {allBlastState.failed} failed · {allBlastState.total} total</span>
           </div>
           <div className="progress-outer">
@@ -628,6 +632,26 @@ export default function CampaignsTab({ settings, onBlastComplete, onNavigate, re
 
 
   const isRunning = blastState && !blastState.done;
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      if (showNew || showConfirm || showFollowUp || confirmDelete) return;
+      e.preventDefault();
+      // Items: Overview (null) + each campaign
+      const items = [null, ...campaigns];
+      const idx = items.findIndex(item => item === null ? selected === null : item?.id === selected?.id);
+      const next = e.key === 'ArrowDown'
+        ? items[idx < items.length - 1 ? idx + 1 : 0]
+        : items[idx > 0 ? idx - 1 : items.length - 1];
+      setSelected(next);
+      requestAnimationFrame(() => document.querySelector('.campaign-item.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, campaigns, showNew, showConfirm, showFollowUp, confirmDelete]);
 
   return (
     <>
@@ -945,7 +969,7 @@ function CampaignDetail({ selected, refreshing, settings, blastState, isRunning,
         {selected.sent_count > 0 && (
           <button className="btn btn-sm" onClick={onFollowUpBlast} disabled={isRunning || !settings?.accountSid}
             style={{ background: 'linear-gradient(180deg, #884400, #552200)', color: '#fff', borderTopColor: '#cc7700', borderLeftColor: '#cc7700' }}>
-            ⏰ Follow-Up Blast
+            🧊 Cold Blast
           </button>
         )}
         {selected.status === 'paused' && (
@@ -1176,7 +1200,7 @@ function FollowUpBlastModal({ campaign, preview, onConfirm, onCancel }) {
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onCancel()}>
       <div className="modal" style={{ maxWidth: 480 }}>
         <div className="modal-header">
-          <span className="modal-title">⏰ FOLLOW-UP BLAST — {campaign.name}</span>
+          <span className="modal-title">🧊 COLD BLAST — {campaign.name}</span>
           <button className="modal-close" onClick={onCancel}>×</button>
         </div>
         <div className="modal-body">
@@ -1195,7 +1219,7 @@ function FollowUpBlastModal({ campaign, preview, onConfirm, onCancel }) {
             </div>
             {preview.followUpCount === 0 && (
               <div style={{ fontSize: 10, color: '#880000', marginTop: 6 }}>
-                No follow-up contacts yet. In the Conversations tab, set a contact's category to "Follow Up" to include them here.
+                No cold contacts yet. In the Conversations tab, set a contact's category to Cold to include them here.
               </div>
             )}
           </div>
@@ -1218,7 +1242,7 @@ function FollowUpBlastModal({ campaign, preview, onConfirm, onCancel }) {
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 8px', cursor: 'pointer', background: 'var(--win-gray)', userSelect: 'none' }}
               >
                 <span style={{ fontFamily: 'var(--font-ui)', fontSize: 11, fontWeight: 'bold' }}>
-                  {listOpen ? '▼' : '▶'} Follow-Up Agents ({preview.contacts.length})
+                  {listOpen ? '▼' : '▶'} Cold Contacts ({preview.contacts.length})
                 </span>
                 <span style={{ fontSize: 10, color: 'var(--win-dark)', fontFamily: 'var(--font-ui)' }}>{listOpen ? 'collapse' : 'expand to review'}</span>
               </div>
@@ -1245,7 +1269,7 @@ function FollowUpBlastModal({ campaign, preview, onConfirm, onCancel }) {
 
           {/* Editable message */}
           <div className="form-group">
-            <label className="form-label">Follow-Up Message</label>
+            <label className="form-label">Cold Blast Message</label>
             <textarea
               className="form-textarea"
               value={message}
@@ -1302,8 +1326,18 @@ function NewCampaignModal({ lists, settings, onClose, onCreated }) {
   const [selectedLists, setSelectedLists] = useState([]);
   const [error, setError] = useState('');
 
-  const toggleList = (id) =>
-    setSelectedLists(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const toggleList = (id) => {
+    setSelectedLists(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      // Auto-fill campaign name from selected list names (only while user hasn't typed a custom name)
+      const autoName = lists.filter(l => next.includes(l.id)).map(l => l.name).join(' + ');
+      setName(cur => {
+        const prevAuto = lists.filter(l => prev.includes(l.id)).map(l => l.name).join(' + ');
+        return cur === '' || cur === prevAuto ? autoName : cur;
+      });
+      return next;
+    });
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) { setError('Enter a campaign name.'); return; }
