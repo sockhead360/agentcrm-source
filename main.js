@@ -3047,6 +3047,46 @@ async function decidePhase2(input) {
   const extras = {}; // pivot/capRevivedTo carried onto whatever decision is finally returned
   const dec = (d) => ({ ...extras, ...d });
 
+  // NOTE: these two helpers are declared HERE, at the top, because branches near the
+  // start of this function (timeframe_drip in particular) call them. As `const` arrow
+  // functions further down they were in the temporal dead zone and threw
+  // "Cannot access 'statedHours' before initialization" on any timeline reply.
+
+  // A timeframe from the agent RE-ANCHORS the whole 10-day drip to that moment rather
+  // than cancelling it: the chase is delayed, not abandoned. Mid-drip this restarts the
+  // run from touch 1 on the promised date.
+  //
+  // The abuse this guards against is an agent stringing us along with a rolling series of
+  // "next Tuesday"s. So a SHORT-horizon promise consumes one of DRIP_MAX_CYCLES restarts,
+  // while a genuinely long-dated park ("next November") costs nothing — that agent is not
+  // jerking us around, they simply have a date. Note that silence can never earn a restart;
+  // only a reply reaches this code, which is what stops the loop from being infinite.
+  const restartDrip = (kind, hours, reply) => {
+    const cycle = state.dripCycle || 1;
+    const longHorizon = hours >= DRIP_LONG_HORIZON_H;
+    const outOfCycles = !longHorizon && cycle >= DRIP_MAX_CYCLES;
+    const outOfTouches = (state.sentDrips || 0) >= DRIP_MAX_TOUCHES;
+    if (outOfCycles || outOfTouches) {
+      return dec({ kind: 'drip_strung_along', category: 'not_interested',
+                   bucket: outOfTouches ? 'touch_ceiling' : 'rolling_promises' });
+    }
+    return dec({
+      kind, category: 'warm', reply,
+      dripStep: 1, dripMissing: state.missingForDrip, hours,
+      dripCycle: longHorizon ? cycle : cycle + 1, dripRestart: true,
+    });
+  };
+
+  // The agent's stated timeframe, deterministic parse first and the classifier's own
+  // estimate as the fallback. decidePhase2 previously used the raw parser only, so any
+  // phrasing the regexes missed silently became "no timeframe given" and the drip just
+  // ploughed ahead on its original schedule.
+  const statedHours = (msg, llm) => {
+    const parsed = parseScheduleHours(msg);
+    if (parsed !== null) return parsed;
+    return (llm && typeof llm.scheduleHours === 'number' && llm.scheduleHours > 0) ? llm.scheduleHours : null;
+  };
+
   // Property is gone (sold / taken / withdrawn) — terminal. Stop the drip, park cold,
   // say nothing. Checked BEFORE seller-MIA so a definite "it sold" isn't treated as a
   // merely-stalled deal that we keep checking back on.
@@ -3199,32 +3239,6 @@ async function decidePhase2(input) {
   // while a genuinely long-dated park ("next November") costs nothing — that agent is not
   // jerking us around, they simply have a date. Note that silence can never earn a restart;
   // only a reply reaches this code, which is what stops the loop from being infinite.
-  const restartDrip = (kind, hours, reply) => {
-    const cycle = state.dripCycle || 1;
-    const longHorizon = hours >= DRIP_LONG_HORIZON_H;
-    const outOfCycles = !longHorizon && cycle >= DRIP_MAX_CYCLES;
-    const outOfTouches = (state.sentDrips || 0) >= DRIP_MAX_TOUCHES;
-    if (outOfCycles || outOfTouches) {
-      return dec({ kind: 'drip_strung_along', category: 'not_interested',
-                   bucket: outOfTouches ? 'touch_ceiling' : 'rolling_promises' });
-    }
-    return dec({
-      kind, category: 'warm', reply,
-      dripStep: 1, dripMissing: state.missingForDrip, hours,
-      dripCycle: longHorizon ? cycle : cycle + 1, dripRestart: true,
-    });
-  };
-
-  // The agent's stated timeframe, deterministic parse first and the classifier's own
-  // estimate as the fallback. decidePhase2 previously used the raw parser only, so any
-  // phrasing the regexes missed silently became "no timeframe given" and the drip just
-  // ploughed ahead on its original schedule.
-  const statedHours = (msg, llm) => {
-    const parsed = parseScheduleHours(msg);
-    if (parsed !== null) return parsed;
-    return (llm && typeof llm.scheduleHours === 'number' && llm.scheduleHours > 0) ? llm.scheduleHours : null;
-  };
-
   // ── Detailed watchdog (address/price hunting + drip machinery) ──
   if (state.lastOutBody === 'This is off-market correct?') {
     const confirmed = await classifyOffMarketConfirmation(message, settings.claudeApiKey);
@@ -3780,7 +3794,10 @@ async function routeInboundReply(conv, contact, msg, settings) {
           const sendAt = dripSendAt(followHours, settings);
           db.updateConversationCategory(conv.id, 'warm');
           conv.category = 'warm';
-          db.cancelWarmDrips(conv.id);
+          // Fresh chase generation: they came back on their own, so the cycle and touch
+          // budgets reset. Without this a revived thread inherits an exhausted cycle count
+          // and would cold-close on its very first stated timeline.
+          db.archiveWarmDrips(conv.id);
           db.createWarmDrip(conv.id, contact.id, 1, missing, sendAt, 1);
           db.logAudit('ai_routed', { phone: msg.from, bucket: 'promise_rescue', followHours });
           log(`AI: ${msg.from} → ${bucket} after not_interested — revived warm, drip starts in ${followHours}h`);
@@ -3794,6 +3811,8 @@ async function routeInboundReply(conv, contact, msg, settings) {
       } else if (bucket === 'property_signal') {
         db.updateConversationCategory(conv.id, 'warm');
         conv.category = 'warm';
+        // Fresh chase generation — see the promise-rescue branch above.
+        db.archiveWarmDrips(conv.id);
         if (p4Level >= 3) {
           // Ask for address + price so the revived lead is actually pursued. Without a reply
           // the last message stays inbound and the warm drip (needs an outbound last message)

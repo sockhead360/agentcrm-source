@@ -1256,25 +1256,39 @@ function createWarmDrip(convId, contactId, step, missing, sendAt, cycle = 1, var
   ).run(convId, contactId, step, missing, sendAt, cycle, variant);
 }
 
-// Highest cycle this conversation has reached (0 if it has never been dripped).
-// A cycle is one full 10-touch run; a timeline from the agent starts the next one.
+// Highest cycle in the CURRENT chase generation (0 if never dripped). A cycle is one full
+// 10-touch run; a timeline from the agent starts the next one. Archived rows belong to a
+// previous generation and are excluded — see archiveWarmDrips.
 function getDripCycle(convId) {
-  const row = db.prepare(`SELECT MAX(cycle) as c FROM warm_drip WHERE conv_id = ?`).get(convId);
+  const row = db.prepare(`SELECT MAX(cycle) as c FROM warm_drip WHERE conv_id = ? AND status != 'archived'`).get(convId);
   return row?.c || 0;
 }
 
-// Copy variants already SENT to this conversation, so a restarted or extended drip
-// never reuses a line the agent has already read. Repetition is the loudest bot tell.
+// Copy variants already sent to this conversation, so a restarted or extended drip never
+// reuses a line the agent has already read. Repetition is the loudest bot tell.
+// Deliberately INCLUDES archived rows: the agent remembers what we texted them last month
+// even if the chase budget has reset.
 function getUsedDripVariants(convId) {
   return db.prepare(
-    `SELECT DISTINCT variant FROM warm_drip WHERE conv_id = ? AND status = 'sent' AND variant IS NOT NULL`
+    `SELECT DISTINCT variant FROM warm_drip WHERE conv_id = ? AND status IN ('sent','archived') AND variant IS NOT NULL`
   ).all(convId).map(r => r.variant);
 }
 
-// Total touches actually delivered across every cycle — the lifetime ceiling that stops
-// an endless chase even if the agent keeps supplying fresh timelines.
+// Touches delivered in the CURRENT generation — the ceiling that stops an endless chase
+// even if the agent keeps supplying fresh timelines.
 function countSentDrips(convId) {
   return db.prepare(`SELECT COUNT(*) as c FROM warm_drip WHERE conv_id = ? AND status = 'sent'`).get(convId)?.c || 0;
+}
+
+// Close out the current chase generation. Called when a conversation that had gone cold is
+// REVIVED by the agent coming back with a fresh signal: they have re-engaged voluntarily,
+// so they earn a full chase budget again rather than inheriting an exhausted cycle count
+// that would cold-close them on their first stated timeline. Copy history survives (see
+// getUsedDripVariants) so the new generation still never repeats a line.
+function archiveWarmDrips(convId) {
+  db.prepare(
+    `UPDATE warm_drip SET status = 'archived' WHERE conv_id = ? AND status IN ('sent','pending','cancelled')`
+  ).run(convId);
 }
 
 function getDueWarmDrips() {
@@ -1708,7 +1722,7 @@ module.exports = {
   createLeadSubmission, getLeadSubmissions, getLeadSubmission, updateLeadSubmission, deleteLeadSubmission, getLatestLeadSubmissionForContact, getConversationMedia,
   createScheduledFollowUp, getDueFollowUps, markFollowUpSent, markFollowUpSkipped, hasSentFollowUp, countSentFollowUps, countOutboundMessages, countOutboundMessagesExcludingDrips, countRecentOutboundToPhone,
   createWarmDrip, getDueWarmDrips, markWarmDripSent, cancelWarmDrips, getLastSentDripStep, hasPendingWarmDrip, getOrphanedNewConversations, cancelPendingFollowUps, getWarmConvsNeedingDrip,
-  getDripCycle, getUsedDripVariants, countSentDrips,
+  getDripCycle, getUsedDripVariants, countSentDrips, archiveWarmDrips,
   batchInsertAiExamples, clearAiExamples, countAiExamples, getRelevantExamples,
   getConversationById, hasInboundSince, getUnhandledInboundConvs, getLastInboundMessage,
   isRelaySid, addRelayLog, getForwardingConversations,
