@@ -2480,6 +2480,14 @@ const DRIP_MISSING_LABEL = {
 const DRIP_TOTAL_STEPS = 10;   // touches in one full cycle
 const DRIP_MAX_CYCLES  = 3;    // initial run + 2 restarts earned by a fresh timeline
 const DRIP_MAX_TOUCHES = 30;   // lifetime ceiling across every cycle
+// Gap between touches. Daily is right when the ball is in the agent's court and they just
+// haven't sent it. When the holdup is OUTSIDE their control (under contract, waiting on
+// probate, seller gone quiet, pre-listing not signed) daily reads as nagging someone about
+// something they cannot fix, so those modes back off to every third day. Same 10 touches,
+// stretched over ~30 days instead of 10, still pushing for a timeline throughout.
+const DRIP_STEP_H         = 24;
+const DRIP_BLOCKED_STEP_H = 72;
+const dripStepHours = (missing) => (missing === 'pending' || missing === 'status') ? DRIP_BLOCKED_STEP_H : DRIP_STEP_H;
 // A timeframe further out than this is a genuine long-term park ("next November"), not
 // someone stalling us. Long parks wait silently and do NOT consume a restart.
 const DRIP_LONG_HORIZON_H = 720; // 30 days
@@ -2582,17 +2590,20 @@ function dripSendAt(hoursAhead, settings) {
 // 'pending' = a pre-listing/coming-soon deal we're waiting on (the seller hasn't signed
 // yet). Poll the STATE. Do NOT pester for an address or price that doesn't exist yet.
 // Ten variants so a pending park gets the same non-repeating treatment as a detail chase.
+// Roughly half of these push for a TIMELINE rather than just polling for news. When the
+// holdup is outside the agent's control the useful question is WHEN, not WHAT: a date lets
+// us re-anchor the whole run to the right moment instead of checking back blindly.
 const DRIP_PENDING_MESSAGES = [
   "Hey, just checking in, any update on that listing?",
-  "Hi again, any word on the property getting signed?",
+  "Hi again, any word on the property getting signed? Any idea on timing?",
   "Following up, any movement on that one?",
-  "Hey, still interested whenever it firms up. Any news?",
+  "Hey, still interested whenever it firms up. Any sense of when that might be?",
   "Checking in, has anything come together on that one?",
-  "Hi, any progress on getting that one signed?",
+  "Hi, any progress on getting that one signed? Rough idea when you'll know?",
   "Hey, still keeping an eye out for this one. Any update?",
-  "Following up, did the seller move forward with it?",
+  "Following up, did the seller move forward with it? When do you think you'll know more?",
   "Quick check in, where does that one stand?",
-  "Hey, no rush at all, just let me know if it comes together.",
+  "Hey, no rush at all. Just let me know roughly when you expect it to come together.",
 ];
 
 // 'status' = the agent has given a concrete REASON they cannot hand over the address or
@@ -2602,17 +2613,21 @@ const DRIP_PENDING_MESSAGES = [
 // have it reads as not listening. So we poll the STATUS instead and let them volunteer
 // the details when the blocker clears. Deliberately generic so one bank covers every
 // blocked situation.
+// Half of these push for a TIMELINE. When the blocker is outside the agent's control the
+// only useful thing they can give us is a WHEN, and a date re-anchors the whole run to the
+// right moment. Asking again for the address or price they already explained they cannot
+// send is how you look like you weren't listening.
 const DRIP_STATUS_MESSAGES = [
   "Hey {name}, any updates on this one?",
-  "Just checking in, any movement on that one?",
+  "Just checking in, any movement on that one? Any idea on timing?",
   "Hi {name}, where does that one stand now?",
-  "Following up, has anything changed on this one?",
+  "Following up, has anything changed on this one? Rough idea when you'll know more?",
   "Hey, any news on that property?",
-  "Checking back in, any update on your end?",
+  "Checking back in, any update on your end? When do you think you'll know?",
   "Hi {name}, still interested if anything shifts on this one.",
-  "Hey, how is that one coming along?",
+  "Hey, how is that one coming along? Any sense of the timeline?",
   "Quick check in, anything new on that one?",
-  "Hey {name}, keep me posted if the situation changes on this one.",
+  "Hey {name}, keep me posted. Even a rough timeframe helps me know when to check back.",
 ];
 
 // Single entry point for drip copy. Returns { body, variant } so the caller can record
@@ -2764,7 +2779,7 @@ function dripCascade(missing, firstDelayH) {
     const body = dripMessage(step, missing);
     if (body) {
       out.push({
-        hours: firstDelayH + (step - 1) * 24,
+        hours: firstDelayH + (step - 1) * dripStepHours(missing),
         body,
         kind: (missing === 'pending' || missing === 'status') ? 'state-poll' : 'drip',
       });
@@ -2775,7 +2790,7 @@ function dripCascade(missing, firstDelayH) {
   // ran out of touches here and never showed the ending, so it read as if the chase went
   // on forever. `outcome: true` tells the renderer to draw it as a note, not an SMS.
   out.push({
-    hours: firstDelayH + (DRIP_TOTAL_STEPS - 1) * 24,
+    hours: firstDelayH + (DRIP_TOTAL_STEPS - 1) * dripStepHours(missing),
     kind: 'cold', outcome: true,
     body: `No reply after ${DRIP_TOTAL_STEPS} follow-ups. Moved to cold and parked, no further messages. Only a reply from the agent can revive it.`,
   });
@@ -2908,7 +2923,7 @@ async function sendDueWarmDrips(settings) {
       if (drip.step < DRIP_TOTAL_STEPS && lifetimeTouches < DRIP_MAX_TOUCHES) {
         // Next touch lands tomorrow at a randomised time. One message per day, seven days
         // a week: agents work weekends, and a Mon-Fri-only pattern is itself a bot tell.
-        const nextSendAt = dripSendAt(24, settings);
+        const nextSendAt = dripSendAt(dripStepHours(missing), settings);
         db.createWarmDrip(drip.conv_id, drip.contact_id, drip.step + 1, missing, nextSendAt, cycle);
         log(`Warm drip ${drip.step + 1}/${DRIP_TOTAL_STEPS} queued for conv ${drip.conv_id} at ${new Date(nextSendAt * 1000).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET`);
       } else {
@@ -3321,7 +3336,7 @@ async function decidePhase2(input) {
       return dec({ kind: 'drip_exhausted', category: 'not_interested' });
     }
     return dec({ kind: 'drip_continue', category: 'warm', dripStep: nextStep,
-                 dripMissing: state.missingForDrip, hours: 24, dripCycle: state.dripCycle || 1 });
+                 dripMissing: state.missingForDrip, hours: dripStepHours(state.missingForDrip), dripCycle: state.dripCycle || 1 });
   }
   if (state.hasPendingDrip) {
     // Precisely-timed follow-up pending — answer side questions, never touch the schedule.
@@ -3342,7 +3357,7 @@ async function decidePhase2(input) {
   }
   if (P2_SOFT_COMMIT_RE.test(message)) {
     return engageOrHold({ kind: 'soft_commit', category: 'warm', reply: 'Sounds good!', dripStep: 1,
-                          dripMissing: state.missingForDrip, hours: 24, dripCycle: state.dripCycle || 1 });
+                          dripMissing: state.missingForDrip, hours: dripStepHours(state.missingForDrip), dripCycle: state.dripCycle || 1 });
   }
   if (warmClass && !warmClass.reply) {
     return engageOrHold({ kind: 'need_both_silent', category: 'warm', bucket: warmClass.bucket });
