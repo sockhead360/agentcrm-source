@@ -2501,8 +2501,16 @@ function chaseAgeDays(convId) {
   try {
     const t = db.getChaseStartedAt(convId);
     if (!t) return 0;
-    const started = new Date(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z').getTime();
-    if (!Number.isFinite(started)) return 0;
+    // warm_drip.created_at is an epoch INTEGER (strftime('%s','now')), unlike
+    // messages.created_at which is a datetime string. Parsing it as a string produced NaN,
+    // which this function swallowed as 0, so the ceiling could never fire. Handle both.
+    let started;
+    if (typeof t === 'number' || /^\d+$/.test(String(t))) {
+      started = Number(t) * 1000;
+    } else {
+      started = new Date(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z').getTime();
+    }
+    if (!Number.isFinite(started) || started <= 0) return 0;
     return (Date.now() - started) / 86400000;
   } catch (_) { return 0; }
 }
@@ -2803,7 +2811,10 @@ function missingFromMessages(msgs) {
 // while production would actually send the backed-off status poll — the simulator telling
 // you the opposite of what the agent would receive.
 function chaseBlockedFromMessages(msgs) {
-  return (msgs || []).filter(m => m.direction === 'inbound').slice(-3).some(m => chaseIsBlocked(m.body || ''));
+  const inbound = (msgs || []).filter(m => m.direction === 'inbound');
+  const newest = inbound[inbound.length - 1];
+  if (newest && P2_BLOCK_CLEARED_RE.test(newest.body || '')) return false;
+  return inbound.slice(-3).some(m => chaseIsBlocked(m.body || ''));
 }
 // What the drip would actually chase for this transcript: a stated blocker outranks the
 // address/price gap, exactly as sendDueWarmDrips recomputes it before every touch.
@@ -3104,6 +3115,12 @@ const P2_NOT_BLOCKED_RE = /\b(?:was|were|had|used to be|previously|already been)
 // A seller who has gone quiet is the canonical out-of-their-control case, so P2_SELLER_MIA_RE
 // counts as blocked too. Without it "the seller went dark on me" kept getting the daily
 // detail chase, demanding an address from an agent who just told us they cannot reach anyone.
+// A blocker is sticky ON PURPOSE: an agent who said "under contract" two messages ago is
+// still under contract unless something says otherwise. But it has to be able to CLEAR, or
+// a thread can never return to the detail chase. The NEWEST inbound wins when it explicitly
+// signals the blocker lifted.
+const P2_BLOCK_CLEARED_RE = /\bfell (out of|through on) contract\b|\bout of contract\b|\bback on (the )?market\b|\bcame back on\b|\bit'?s available( again)?\b|\bavailable again\b|\b(he|she|they|the seller|the owner) (is |are |finally )?back\b|\bgot (a hold of|ahold of|in touch with)\b|\b(seller|owner|they) (finally )?(responded|got back|reached out|resurfaced)\b|\bno longer (under contract|pending)\b|\bprobate (is )?(done|closed|finished)\b|\bpaperwork (is )?(done|signed|finished)\b/i;
+
 function chaseIsBlocked(body = '') {
   if (P2_NOT_BLOCKED_RE.test(body)) return false;
   return P2_CHASE_BLOCKED_RE.test(body) || P2_SELLER_MIA_RE.test(body);
@@ -3112,8 +3129,10 @@ function detectChaseBlocked(convId) {
   try {
     // Look at the recent inbound side, not just the last message: a blocker stated three
     // days ago is still in force if nothing has changed since.
-    const inbound = db.getRecentMessages(convId, 12).filter(m => m.direction === 'inbound').slice(-3);
-    return inbound.some(m => chaseIsBlocked(m.body || ''));
+    const inbound = db.getRecentMessages(convId, 12).filter(m => m.direction === 'inbound');
+    const newest = inbound[inbound.length - 1];
+    if (newest && P2_BLOCK_CLEARED_RE.test(newest.body || '')) return false;
+    return inbound.slice(-3).some(m => chaseIsBlocked(m.body || ''));
   } catch (_) { return false; }
 }
 
