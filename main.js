@@ -1883,7 +1883,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     `- Agent repeats a short-term delay they already stated ("In an hour", "Give me an hour", "One hour") when the address/details have ALREADY been requested in this conversation → reply=null (do NOT ask again), warm, scheduleHours=4. They already committed — just wait.\n` +
     `- Agent confirms they HAVE something AND says they will send the info/details soon with no busy excuse ("I do, I'll send you the info shortly", "ill send you infi shortly", "I'll send it over", "sending it shortly", "I'll text you the details", "I'll shoot it over", "sending now", "I'll send it to you") → reply "Awesome sounds good" → warm, scheduleHours=4.\n` +
     `- PRE-LISTING / COMING-SOON with NO timeframe given yet (agent says they'll have something soon, may get something, waiting on the listing agreement to be signed, coming to market, about to list, etc. but gives NO specific date or timeline): acknowledge warmly AND gently push for a rough timeline so we can time our follow-up. Examples: "Perfect, send me the details when you can. Any idea on the timing?" or "Sounds good! Roughly when do you think it'll be ready?" or "Awesome, keep me posted. Any sense of the timeframe?" → warm. Getting even a loose timeline ("next week", "once it's signed", "end of month") lets us follow up at the right moment. If they DO give a timeframe, the 'needs time to get details' rule below takes over (scheduleHours).\n` +
-    `- Agent confirmed they have a specific property but needs time to get details (address/price): warm, reply=null, set scheduleHours. (They HAVE a property, so this is warm by definition — the stated time just tells us when to resume chasing.) Estimate hours from now based on the stated time — the system will override with an exact JS calculation, so your estimate just needs to be in the right ballpark. Examples: tomorrow=24, Wednesday/next Wednesday=hours until that weekday, next Friday=hours until that Friday, the Friday after next=hours until 2 Fridays from now, 4 Fridays from today=hours until the 4th Friday from now, the 11th/15th=hours until that date this or next month, may 1st/december 15=hours until that specific date, next week=168, in a couple weeks=336, about a month=720, next month=720, in a month or so=720, in a couple months=1440, in a few months=2160, in December/in July=hours until the 1st of that month; if vague ("I'll check", "I'll get back to you") use 48. SAME-DAY SHORT WAITS: "give me 30 mins", "I'm in a meeting", "with a client", "be right back", "give me an hour" → use 5 (the system gives them breathing room regardless of the literal time). SPECIFIC SAME-DAY TIME: "text me at 5:30 tonight", "call me at 3pm", "reach me at 6" → calculate exact hours to that time today.\n` +
+    `- Agent confirmed they have a specific property but needs time to get details (address/price): warm, reply=null, set scheduleHours. (They HAVE a property, so this is warm by definition — the stated time just tells us when to resume chasing.) Estimate hours from now based on the stated time — the system will override with an exact JS calculation, so your estimate just needs to be in the right ballpark. Examples: tomorrow=24, a bare weekday ("Wednesday", "this Wednesday")=hours until that weekday THIS coming week; "NEXT <weekday>" always means that day in the FOLLOWING week, never the one a few days away — said on a Tuesday, "next Friday" is the Friday AFTER this one (about 10 days out), not the Friday 3 days away; the Friday after next=one week beyond that, 4 Fridays from today=hours until the 4th Friday from now, the 11th/15th=hours until that date this or next month, may 1st/december 15=hours until that specific date, next week=168, in a couple weeks=336, about a month=720, next month=720, in a month or so=720, in a couple months=1440, in a few months=2160, in December/in July=hours until the 1st of that month; if vague ("I'll check", "I'll get back to you") use 48. SAME-DAY SHORT WAITS: "give me 30 mins", "I'm in a meeting", "with a client", "be right back", "give me an hour" → use 5 (the system gives them breathing room regardless of the literal time). SPECIFIC SAME-DAY TIME: "text me at 5:30 tonight", "call me at 3pm", "reach me at 6" → calculate exact hours to that time today.\n` +
     `- SOFT MAYBE + CALLBACK ("possibly", "maybe", "might", "perhaps", "could be", "I think so" combined with any callback/delay phrase like "I'll get back with you", "I'll get back to you", "let me check", "I'll check", "I'll look into it", "I'll find out"): agent is signaling they MIGHT have something — this is NOT a cold-close. → warm, reply=null, scheduleHours=48. The "possibly/maybe" acts as a soft property signal, and a property signal means warm so the chase resumes at the stated time.\n` +
     `- "CHECK BACK WITH ME" IS WARM: an agent who invites you to follow up later is signalling they expect to have something. "check back with me", "check back with me next week", "check back in a couple weeks", "circle back with me later", "touch base with me in the spring", "reach out to me again after the holidays" → warm, reply=null, and set scheduleHours from whatever date they gave (if they gave none, use 24). Naming a date is ideal but not required; the invitation itself is the signal. THIS IS NOT THE SAME as "let me check" / "let me look around" / "let me see what I have" / "I'll look into it", where THEY are going to go search their own inventory with nothing in hand — those stay not_interested under the passive-search rule. The difference is who is being asked to act: if they are inviting US to come back, it is warm; if they are offering to go looking, it is cold. EXCEPTION to the passive search cold rule — never cold-close a message that opens with a soft affirmative like "possibly", "maybe", "might have something".\n` +
     `- "let me check" / "let me look" / "let me see": FIRST check whether the SAME message names any actual lead — a person/colleague who has one ("my coworker Bob has one", "I know a guy"), a specific property, an area, or "I might have one in X". If it names ANY such lead → that is a property or knows-someone signal → warm / knows_someone (ask for the details or that person's contact info); do NOT cold-close it. ONLY if it is BARE "let me check"/"let me look"/"let me see" with NOTHING else (no lead, no person, no property, no area) → not_interested, reply=null. On its own it never amounts to anything and there is no indication they have a property, so do NOT follow up on it.\n` +
@@ -2145,6 +2145,20 @@ function parseScheduleHours(text) {
   // Days until next occurrence of a weekday (always ≥1, never 0)
   const daysToWeekday = (wd) => { let d = wd - now.getDay(); if (d <= 0) d += 7; return d; };
 
+  // "NEXT <weekday>" means the one in NEXT week, not merely the next one to come around.
+  // Said on a Tuesday, "next Friday" is the Friday AFTER this one. So take the upcoming
+  // occurrence and push it a week if it still falls inside the current Mon-Sun week.
+  //   Tue → "next Friday"   : upcoming Fri is this week      → +7  (Friday next week)
+  //   Tue → "next Monday"   : upcoming Mon is already next week → unchanged
+  //   Tue → "next Tuesday"  : upcoming Tue is next week          → unchanged
+  // "this Friday" / a bare "Friday" keep meaning the upcoming one and do not use this.
+  const daysToNextWeekWeekday = (wd) => {
+    const days = daysToWeekday(wd);
+    const isoDow = now.getDay() === 0 ? 7 : now.getDay(); // 1=Mon .. 7=Sun
+    const daysLeftThisWeek = 7 - isoDow;
+    return days <= daysLeftThisWeek ? days + 7 : days;
+  };
+
   let m;
 
   // "the day after tomorrow" — MUST be tested before the plain "tomorrow" branch below,
@@ -2261,18 +2275,17 @@ function parseScheduleHours(text) {
     }
   }
 
-  // "the <day> after next" / "<day> after next" → 2nd upcoming occurrence
+  // "the <day> after next" / "<day> after next" → one week beyond "next <day>"
   m = lower.match(/\b(?:the\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+after\s+next\b/);
   if (m) {
-    const days = daysToWeekday(DAYS.indexOf(m[1])) + 7;
+    const days = daysToNextWeekWeekday(DAYS.indexOf(m[1])) + 7;
     const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
   }
 
-  // "next <day>" → upcoming occurrence; if today IS that day, skip to next week
+  // "next <day>" → that weekday in NEXT week (see daysToNextWeekWeekday)
   m = lower.match(/\bnext\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
   if (m) {
-    const wd=DAYS.indexOf(m[1]);
-    const days = now.getDay()===wd ? 7 : daysToWeekday(wd);
+    const days = daysToNextWeekWeekday(DAYS.indexOf(m[1]));
     const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
   }
 
@@ -2285,8 +2298,15 @@ function parseScheduleHours(text) {
       const d=new Date(now); d.setDate(d.getDate()+daysToWeekday(i)+7); d.setHours(9,0,0,0); return hoursTo(d);
     }
   }
+  // "next tues" → next week's Tuesday, matching the full-name rule above.
   for (let i = 0; i < DAY_ALT.length; i++) {
-    if (new RegExp(`\\b(?:next|this|on|by|come)\\s+(?:${DAY_ALT[i]})\\b`).test(lower)) {
+    if (new RegExp(`\\bnext\\s+(?:${DAY_ALT[i]})\\b`).test(lower)) {
+      const d=new Date(now); d.setDate(d.getDate()+daysToNextWeekWeekday(i)); d.setHours(9,0,0,0); return hoursTo(d);
+    }
+  }
+  // "this wed" / "on fri" / "by thurs" → the UPCOMING occurrence, not next week's.
+  for (let i = 0; i < DAY_ALT.length; i++) {
+    if (new RegExp(`\\b(?:this|on|by|come)\\s+(?:${DAY_ALT[i]})\\b`).test(lower)) {
       const days = now.getDay() === i ? 7 : daysToWeekday(i);
       const d=new Date(now); d.setDate(d.getDate()+days); d.setHours(9,0,0,0); return hoursTo(d);
     }
