@@ -808,6 +808,30 @@ function hasOutboundMessage(conversationId, body) {
   ).get(conversationId, body);
 }
 
+// Same check, but scoped to the last `hours`. The drip sender needs the CRASH-RECOVERY
+// meaning of this guard ("did we already send this a moment ago and die before recording
+// it?"), not the lifetime meaning. Using the lifetime version there had a silent failure
+// mode: once a conversation had used every phrase in its bank, the reused phrase always
+// matched, so the step was marked sent and NOTHING WENT OUT. The chase looked healthy in
+// the database while the agent heard nothing. Repeat suppression for AI replies still uses
+// the lifetime version, which is correct for that job.
+function hasRecentOutboundMessage(conversationId, body, hours = 72) {
+  const since = new Date(Date.now() - hours * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  return !!db.prepare(
+    `SELECT 1 FROM messages WHERE conversation_id = ? AND direction = 'outbound' AND body = ? AND created_at > ? LIMIT 1`
+  ).get(conversationId, body, since);
+}
+
+// When did the CURRENT chase generation begin? Used for the calendar ceiling: cycles and
+// touch counts alone let a blocked thread run for months, because every blocked cycle is
+// ~27 days and each re-anchor adds its own wait on top.
+function getChaseStartedAt(conversationId) {
+  const row = db.prepare(
+    `SELECT MIN(created_at) AS t FROM warm_drip WHERE conv_id = ? AND status != 'archived'`
+  ).get(conversationId);
+  return row?.t || null;
+}
+
 function getRecentMessages(conversationId, limit = 6) {
   return db.prepare(
     `SELECT direction, body FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`
@@ -1268,9 +1292,18 @@ function getDripCycle(convId) {
 // reuses a line the agent has already read. Repetition is the loudest bot tell.
 // Deliberately INCLUDES archived rows: the agent remembers what we texted them last month
 // even if the chase budget has reset.
+// Returned LEAST RECENTLY USED FIRST. dripBodyFor relies on this ordering for its fallback
+// once a bank is exhausted, so the ORDER BY is load-bearing, not cosmetic.
+// MAX(sent_at) per variant = the last time that line was used, so re-sending a line moves
+// it to the back of the queue. Ordering by FIRST use instead would hand back the same line
+// forever, which is how the exhausted case ended up repeating one phrase.
 function getUsedDripVariants(convId) {
   return db.prepare(
-    `SELECT DISTINCT variant FROM warm_drip WHERE conv_id = ? AND status IN ('sent','archived') AND variant IS NOT NULL`
+    `SELECT variant, MAX(COALESCE(sent_at, 0)) AS last_used
+       FROM warm_drip
+      WHERE conv_id = ? AND status IN ('sent','archived') AND variant IS NOT NULL
+      GROUP BY variant
+      ORDER BY last_used ASC`
   ).all(convId).map(r => r.variant);
 }
 
@@ -1721,6 +1754,7 @@ module.exports = {
   runDemo,
   createLeadSubmission, getLeadSubmissions, getLeadSubmission, updateLeadSubmission, deleteLeadSubmission, getLatestLeadSubmissionForContact, getConversationMedia,
   createScheduledFollowUp, getDueFollowUps, markFollowUpSent, markFollowUpSkipped, hasSentFollowUp, countSentFollowUps, countOutboundMessages, countOutboundMessagesExcludingDrips, countRecentOutboundToPhone,
+  hasRecentOutboundMessage, getChaseStartedAt,
   createWarmDrip, getDueWarmDrips, markWarmDripSent, cancelWarmDrips, getLastSentDripStep, hasPendingWarmDrip, getOrphanedNewConversations, cancelPendingFollowUps, getWarmConvsNeedingDrip,
   getDripCycle, getUsedDripVariants, countSentDrips, archiveWarmDrips,
   batchInsertAiExamples, clearAiExamples, countAiExamples, getRelevantExamples,

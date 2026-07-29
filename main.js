@@ -2491,6 +2491,21 @@ const dripStepHours = (missing) => (missing === 'pending' || missing === 'status
 // A timeframe further out than this is a genuine long-term park ("next November"), not
 // someone stalling us. Long parks wait silently and do NOT consume a restart.
 const DRIP_LONG_HORIZON_H = 720; // 30 days
+// Calendar backstop. Cycles and touch counts alone do not bound elapsed time: a blocked
+// cycle is ~27 days and every re-anchor adds its own wait before the next one starts, so
+// three blocked cycles with month-long parks between them ran past 140 days. After this
+// many days in one chase generation the thread closes regardless of budget left. A revival
+// starts a new generation and resets the clock.
+const DRIP_MAX_CHASE_DAYS = 120;
+function chaseAgeDays(convId) {
+  try {
+    const t = db.getChaseStartedAt(convId);
+    if (!t) return 0;
+    const started = new Date(String(t).includes('T') ? t : String(t).replace(' ', 'T') + 'Z').getTime();
+    if (!Number.isFinite(started)) return 0;
+    return (Date.now() - started) / 86400000;
+  } catch (_) { return 0; }
+}
 
 // Ten ways to ask the same question, plus ten more held back for a restarted drip, so an
 // agent who strings us along for a month still never sees the same sentence twice.
@@ -2604,6 +2619,14 @@ const DRIP_PENDING_MESSAGES = [
   "Following up, did the seller move forward with it? When do you think you'll know more?",
   "Quick check in, where does that one stand?",
   "Hey, no rush at all. Just let me know roughly when you expect it to come together.",
+  "Hi, has that one been signed yet?",
+  "Hey, checking in. Any word from the seller on moving forward?",
+  "Following up, is that one still on track?",
+  "Hi, any change on that listing? Rough timing if you have it.",
+  "Hey, still interested when it firms up. Where does it stand?",
+  "Checking back, did that one end up coming together?",
+  "Hi, any movement on the paperwork side?",
+  "Hey, let me know when it is ready and I will take a look.",
 ];
 
 // 'status' = the agent has given a concrete REASON they cannot hand over the address or
@@ -2628,6 +2651,14 @@ const DRIP_STATUS_MESSAGES = [
   "Hey, how is that one coming along? Any sense of the timeline?",
   "Quick check in, anything new on that one?",
   "Hey {name}, keep me posted. Even a rough timeframe helps me know when to check back.",
+  "Hi {name}, anything move on that one since we last spoke?",
+  "Hey, still on my list. Where does it stand?",
+  "Checking in, has the situation changed at all?",
+  "Hi, any word on that one yet? No rush if not.",
+  "Hey {name}, still watching this one. Any developments?",
+  "Following up, is that one still in the same spot?",
+  "Hi, curious where that one landed. Any news?",
+  "Hey, checking back. Do you have a better sense of the timing now?",
 ];
 
 // Single entry point for drip copy. Returns { body, variant } so the caller can record
@@ -2636,10 +2667,18 @@ function dripBodyFor(missing, contact, convId, usedVariants) {
   const bank = missing === 'pending' ? DRIP_PENDING_MESSAGES
              : missing === 'status'  ? DRIP_STATUS_MESSAGES
              : DRIP_MESSAGES;
-  const used = new Set(usedVariants || []);
+  const used = Array.isArray(usedVariants) ? usedVariants : [];
+  const usedSet = new Set(used);
   const order = dripVariantOrder(convId).filter(i => i < bank.length);
-  let variant = order.find(i => !used.has(i));
-  if (variant === undefined) variant = order[0] ?? 0;
+  let variant = order.find(i => !usedSet.has(i));
+  if (variant === undefined) {
+    // Bank exhausted. Reuse the LEAST RECENTLY used line rather than always falling back to
+    // the same one. getUsedDripVariants returns least-recently-used first, and re-sending a
+    // line updates its sent_at, so successive reuses rotate through the bank instead of
+    // hammering one phrase.
+    const lru = used.filter(i => i < bank.length);
+    variant = lru.length ? lru[0] : (order[0] ?? 0);
+  }
   if (missing === 'pending') return { body: DRIP_PENDING_MESSAGES[variant], variant };
   if (missing === 'status')  return { body: renderDripMessage(variant, missing, contact, DRIP_STATUS_MESSAGES), variant };
   return { body: renderDripMessage(variant, missing, contact), variant };
@@ -2874,6 +2913,17 @@ async function sendDueWarmDrips(settings) {
       const contact = db.getContactById(drip.contact_id);
       if (!contact) { db.cancelWarmDrips(drip.conv_id); continue; }
 
+      // Calendar backstop: however much cycle and touch budget is left, one chase
+      // generation does not outlive DRIP_MAX_CHASE_DAYS.
+      const ageDays = chaseAgeDays(drip.conv_id);
+      if (ageDays >= DRIP_MAX_CHASE_DAYS) {
+        db.cancelWarmDrips(drip.conv_id);
+        db.updateConversationCategory(drip.conv_id, 'not_interested');
+        db.logAudit('warm_drip_aged_out', { convId: drip.conv_id, phone: contact.phone, days: Math.round(ageDays) });
+        log(`Warm drip aged out — conv ${drip.conv_id} chased ${Math.round(ageDays)} days, closing`);
+        continue;
+      }
+
       // Recompute what's actually missing right now, not what was missing when this
       // drip was queued — if the agent sent partial info (e.g. the address) after
       // creation but before this fired, the stored snapshot would be stale and the
@@ -2894,7 +2944,9 @@ async function sendDueWarmDrips(settings) {
       // Self-healing dedup: if this exact step body already went out (e.g. a prior
       // send succeeded but then threw before markWarmDripSent), don't re-send —
       // just advance the chain.
-      if (db.hasOutboundMessage(drip.conv_id, body)) {
+      // Crash-recovery guard only (see hasRecentOutboundMessage). Scoped to 72h so an
+      // exhausted phrase bank can never silently swallow a touch.
+      if (db.hasRecentOutboundMessage(drip.conv_id, body, 72)) {
         db.markWarmDripSent(drip.id, picked.variant);
         // fall through to queue the next step / cold-close below
       } else {
@@ -3111,9 +3163,10 @@ async function decidePhase2(input) {
     const longHorizon = hours >= DRIP_LONG_HORIZON_H;
     const outOfCycles = !longHorizon && cycle >= DRIP_MAX_CYCLES;
     const outOfTouches = (state.sentDrips || 0) >= DRIP_MAX_TOUCHES;
-    if (outOfCycles || outOfTouches) {
+    const outOfTime = (state.chaseAgeDays || 0) >= DRIP_MAX_CHASE_DAYS;
+    if (outOfCycles || outOfTouches || outOfTime) {
       return dec({ kind: 'drip_strung_along', category: 'not_interested',
-                   bucket: outOfTouches ? 'touch_ceiling' : 'rolling_promises' });
+                   bucket: outOfTime ? 'chase_aged_out' : outOfTouches ? 'touch_ceiling' : 'rolling_promises' });
     }
     return dec({
       kind, category: 'warm', reply,
@@ -3568,6 +3621,7 @@ async function routeInboundReply(conv, contact, msg, settings) {
         hasPendingDrip: db.hasPendingWarmDrip(conv.id),
         dripCycle: Math.max(1, db.getDripCycle(conv.id)),
         sentDrips: db.countSentDrips(conv.id),
+        chaseAgeDays: chaseAgeDays(conv.id),
         missingHeld: detectMissingHeld(conv.id),
         missingForDrip: detectMissingForDrip(conv.id, lastOutBody),
         pendingMarkerSent: p2outs.some(o => PENDING_MARKER_RE.test(o.body || '')),
@@ -4873,6 +4927,7 @@ ipcMain.handle('ai:simulate', async (_, { message, history, level, hasPendingFol
         // simulated timeline re-anchors the drip rather than tripping the strung-along cap.
         dripCycle: 1,
         sentDrips: 0,
+        chaseAgeDays: 0,
       };
       const sbCategory = lastOutBody === 'Are you direct on these?' ? 'follow_up' : 'warm';
       const d = await decidePhase2({
