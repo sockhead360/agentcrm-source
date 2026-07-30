@@ -17,6 +17,28 @@ const ASAR_SRC      = path.join(__dirname, 'dist/mac/AgentCRM.app/Contents/Resou
 const ASAR_TMP      = path.join(require('os').tmpdir(), 'app.asar');
 const GITHUB_REPO   = 'sockhead360/agentcrm-releases';
 
+// ── 0. AI LOCK PRECONDITION ────────────────────────────────────────────────
+// Refuse to ship unless an AI unlock password is baked into main.js. The lock is a
+// build-time constant, not a per-install setting, so a deploy with an empty AI_LOCK is
+// meaningless: nobody, including the owner, could change AI settings afterwards. Runs
+// before the version bump so a blocked deploy leaves nothing behind.
+// Set the password with: node scripts/set-ai-lock.js
+{
+  const mainSrc = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const lock = mainSrc.match(/const AI_LOCK = \{\s*salt: '([^']*)',\s*hash: '([^']*)'/);
+  if (!lock) {
+    console.error('\n✗ DEPLOY BLOCKED: could not find AI_LOCK in main.js.\n');
+    process.exit(1);
+  }
+  if (!lock[1] || !lock[2]) {
+    console.error('\n✗ DEPLOY BLOCKED: no AI unlock password is baked into this build.');
+    console.error('  Without it the AI cannot be enabled by anyone, including you.');
+    console.error('  Set it first:  node scripts/set-ai-lock.js\n');
+    process.exit(1);
+  }
+  console.log('✓ AI lock present');
+}
+
 // ── 1. Bump patch version ──────────────────────────────────────────────────
 const pkg             = JSON.parse(fs.readFileSync(PKG_PATH, 'utf8'));
 const [maj, min, pat] = pkg.version.split('.').map(Number);

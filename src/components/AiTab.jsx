@@ -68,6 +68,7 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
+  const [lockStatus, setLockStatus] = useState({ configured: true, unlocked: false });
   const [passwordError, setPasswordError] = useState('');
   const [aiAutoSubmit, setAiAutoSubmit] = useState(false);
   const [showAutoSubmitPasswordPrompt, setShowAutoSubmitPasswordPrompt] = useState(false);
@@ -97,6 +98,17 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
   useEffect(() => { load(); loadExampleStats(); }, [load, loadExampleStats]);
 
   useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try { const st = await window.api.aiLockStatus(); if (alive) setLockStatus(st); } catch (_) {}
+    };
+    poll();
+    // The unlock expires in the main process; re-checking keeps the UI honest about it.
+    const t = setInterval(poll, 20000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [sandboxHistory, sandboxLoading]);
 
@@ -104,8 +116,11 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
   // the operator should not be able to switch the AI on, or move between levels, without it.
   // With no password set nothing is gated, so the password must be set on any machine that
   // is handed to someone else.
+  // The renderer never holds or compares the password. It asks the main process to unlock,
+  // and the main process is what actually permits the settings write. Nothing here can be
+  // bypassed from devtools, because bypassing the prompt still hits a locked IPC handler.
   const requestGated = (action) => {
-    if (!aiLevelPassword) { action(); return; }
+    if (lockStatus.unlocked) { action(); return; }
     setPendingAction(() => action);
     setShowPasswordPrompt(true);
     setPasswordInput('');
@@ -132,17 +147,21 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
     await window.api.saveSettings({ aiLevel: String(num) });
   };
 
-  const handlePasswordSubmit = () => {
-    if (passwordInput === aiLevelPassword) {
-      const action = pendingAction;
-      setPendingAction(null);
-      setShowPasswordPrompt(false);
-      setPasswordInput('');
-      setPasswordError('');
-      if (action) action();
-    } else {
-      setPasswordError('Incorrect password.');
+  const handlePasswordSubmit = async () => {
+    const res = await window.api.aiUnlock(passwordInput);
+    if (!res || !res.ok) {
+      setPasswordError(res && res.reason === 'not_configured'
+        ? 'This build has no unlock password set.'
+        : 'Incorrect password.');
+      return;
     }
+    setLockStatus({ configured: true, unlocked: true });
+    const action = pendingAction;
+    setPendingAction(null);
+    setShowPasswordPrompt(false);
+    setPasswordInput('');
+    setPasswordError('');
+    if (action) action();
   };
 
   const handleImport = async () => {
@@ -402,9 +421,9 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
                   className="form-input"
                   value={autoSubmitPasswordInput}
                   onChange={e => { setAutoSubmitPasswordInput(e.target.value); setAutoSubmitPasswordError(''); }}
-                  onKeyDown={e => {
+                  onKeyDown={async e => {
                     if (e.key === 'Enter') {
-                      if (autoSubmitPasswordInput === aiLevelPassword) {
+                      if ((await window.api.aiUnlock(autoSubmitPasswordInput))?.ok) {
                         setAiAutoSubmit(true);
                         window.api.saveSettings({ aiAutoSubmit: 'true' });
                         setShowAutoSubmitPasswordPrompt(false);
@@ -417,8 +436,8 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
                   autoFocus
                   style={{ flex: 1 }}
                 />
-                <button className="btn btn-primary" onClick={() => {
-                  if (autoSubmitPasswordInput === aiLevelPassword) {
+                <button className="btn btn-primary" onClick={async () => {
+                  if ((await window.api.aiUnlock(autoSubmitPasswordInput))?.ok) {
                     setAiAutoSubmit(true);
                     window.api.saveSettings({ aiAutoSubmit: 'true' });
                     setShowAutoSubmitPasswordPrompt(false);
@@ -685,13 +704,34 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
           )}
         </div>
 
-        {/* Level 3 password management */}
+        {/* AI lock status. Read-only ON PURPOSE. There used to be a password field here,
+            which meant whoever held the app could set their own password and unlock the AI
+            with it. The password now lives in the build (see scripts/set-ai-lock.js) and is
+            controlled by whoever ships it. */}
         <div className="settings-section">
-          <div className="settings-section-title">LEVEL 3 PASSWORD</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text2)', marginBottom: 8, lineHeight: 1.6 }}>
-            Set a password to lock Level 3 (Advanced). Leave blank to allow free access.
+          <div className="settings-section-title">AI LOCK</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text2)', lineHeight: 1.6 }}>
+            {!lockStatus.configured ? (
+              <span style={{ color: '#996600' }}>
+                No password is set in this build. AI settings cannot be changed.
+              </span>
+            ) : lockStatus.unlocked ? (
+              <span style={{ color: '#006600' }}>
+                Unlocked for this session. Re-locks automatically after 30 minutes or on quit.
+              </span>
+            ) : (
+              <span>
+                Locked. The admin password is required to enable the AI or change its level.
+                It is set by whoever builds the app and is not stored on this machine.
+              </span>
+            )}
           </div>
-          <PasswordSaveRow value={aiLevelPassword} onChange={setAiLevelPassword} />
+          {lockStatus.unlocked && (
+            <button className="btn" style={{ marginTop: 8 }}
+              onClick={async () => { await window.api.aiLock(); setLockStatus({ configured: true, unlocked: false }); }}>
+              Lock now
+            </button>
+          )}
         </div>
 
       </div>
