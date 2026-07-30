@@ -1525,6 +1525,32 @@ function hasInboundSince(convId, timestamp) {
 // clock-in triage. "Unhandled" = still unread (you never opened it: opening marks it
 // read), the agent spoke last (last message is inbound, so you didn't reply by hand),
 // not RED HOT, not human-taken-over, not archived.
+// Outage recovery. Same shape as getUnhandledInboundConvs, getUnroutedInboundConvs, but AGE-BOUNDED, and that
+// bounding is the whole point:
+//   * lower bound (>120s) keeps this from racing the live routing debounce, which would
+//     double-process a message that is seconds away from being handled normally;
+//   * upper bound (<48h) keeps it from ever sweeping the whole backlog at once. An outage
+//     longer than two days is not a thing we need to auto-recover from, and without the
+//     ceiling a future deploy could wake hundreds of old threads in one poll.
+// Used when a classification failed for reasons outside our control (Anthropic 529, network
+// drop, laptop asleep). The conversation is untouched by the failure, so re-routing it on a
+// later poll is exactly equivalent to the message having arrived then.
+function getUnroutedInboundConvs() {
+  return db.prepare(`
+    SELECT c.id, c.contact_id
+    FROM conversations c
+    WHERE COALESCE(c.archived, 0) = 0
+      AND COALESCE(c.human_replied, 0) = 0
+      AND c.category != 'caliente'
+      AND (SELECT m.id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1)
+          > COALESCE(c.ai_handled_msg_id, 0)
+      AND (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) = 'inbound'
+      AND (CAST(strftime('%s','now') AS INTEGER) -
+           CAST(strftime('%s', (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1)) AS INTEGER))
+          BETWEEN 120 AND 172800
+  `).all();
+}
+
 function getUnhandledInboundConvs() {
   // "Unhandled" = last message is inbound AND newer than the AI's progress marker
   // (ai_handled_msg_id). unread_count is no longer part of this check — the AI doesn't

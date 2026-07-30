@@ -20,6 +20,30 @@ function aiText(response) {
   return (textBlock ? textBlock.text : '').trim();
 }
 
+// Every Anthropic call goes through here. maxRetries is raised well above the SDK default
+// of 2 because a transient 529 (overloaded_error) must never cost us a lead: the SDK
+// retries 429 and any status >=500 with exponential backoff, so a capacity blip on their
+// side is absorbed silently rather than surfacing as a dropped classification.
+// NOTE: this MUST stay inside one of sync-engine.js's extracted segments (this one starts
+// at `function aiText`). Defined above that anchor it is invisible to the sandbox build,
+// which then calls an undefined aiClient and fails every request.
+const AI_MAX_RETRIES = 6;
+function aiClient(apiKey) {
+  return new Anthropic({ apiKey, maxRetries: AI_MAX_RETRIES });
+}
+
+// Transient upstream failures (529 overloaded, 429, network) are not bugs and must not read
+// like one. Production treats these exactly like the laptop being off: nothing happens, the
+// conversation is untouched, and the recovery sweep re-routes the reply on a later poll.
+function friendlyAiError(msg = '') {
+  const m = String(msg);
+  if (/529|overloaded/i.test(m)) return "Claude's API is briefly overloaded. Nothing was changed. In the real app this reply would simply be re-read on the next poll, the same as if your laptop were closed.";
+  if (/\b429\b|rate.?limit/i.test(m)) return 'Rate limited for a moment. Nothing was changed; the real app retries automatically.';
+  if (/ENOTFOUND|ECONNRESET|ETIMEDOUT|network|fetch failed/i.test(m)) return 'Network hiccup reaching the API. Nothing was changed; the real app retries automatically.';
+  if (/401|authentication/i.test(m)) return 'API key rejected. Check the Claude API key in Settings.';
+  return 'Something went wrong reaching the API. Nothing was changed.';
+}
+
 // ── Standoff / unfulfillable-gate detection ───────────────────────────────────
 // An agent is gating the deal behind something the AI structurally CANNOT do over
 // SMS: sign a buyer-broker agreement (BBA), send an email, or hop on a call to
@@ -1144,7 +1168,7 @@ async function classifyAgentReply(messageBody, apiKey) {
   const dbExamples = db.getColdMessageExamples();
   const seedSet = new Set(SEED_NO_EXAMPLES);
   const noExamples = [...SEED_NO_EXAMPLES, ...dbExamples.filter(ex => !seedSet.has(ex))].slice(0, 60);
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
 
   const system =
     "You route inbound SMS replies from real estate agents for a cash homebuyer/wholesaler. " +
@@ -1236,7 +1260,7 @@ async function sendAiReply(conv, contact, replyKey, settings) {
 // nudge at a time, without freelancing.
 
 async function classifyPropertyDetails(messages, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const convoText = messages
     .map(m => `${m.direction === 'inbound' ? 'Agent' : 'You'}: ${m.body}`)
     .join('\n');
@@ -1271,9 +1295,27 @@ async function classifyPropertyDetails(messages, apiKey) {
   }
 }
 
+// Absolute backstop on outbound content. No current path can put an error string in front
+// of an agent (every catch block only logs, and errors never become a `reply`), but the cost
+// of one leaking is a burned relationship and a burned number, so this is checked
+// unconditionally on every AI-generated send. Deliberately narrow: it matches machine
+// wreckage, not anything a human reply would plausibly contain.
+const OUTBOUND_JUNK_RE = /^\s*(?:ai error|error[:\s]|exception|traceback|undefined|null|nan|\{"|\[object)/i;
+const OUTBOUND_JUNK_ANYWHERE_RE = /\b(?:overloaded_error|invalid_request_error|authentication_error|rate_limit_error|api_error|request_id|stack trace|ECONNRESET|ETIMEDOUT|ENOTFOUND|status code \d{3})\b/i;
+function looksLikeMachineJunk(body = '') {
+  if (!body.trim()) return true;
+  return OUTBOUND_JUNK_RE.test(body) || OUTBOUND_JUNK_ANYWHERE_RE.test(body);
+}
+
 async function sendAiReplyRaw(conv, contact, text, settings) {
   // Strip em dashes — hard ban, replace with comma+space for readability
   const body = sanitizeForGSM7(text.replace(/—/g, ', ').replace(/\s{2,}/g, ' ').trim());
+  // Never, under any circumstances, text an agent machine wreckage.
+  if (looksLikeMachineJunk(body)) {
+    log(`AI reply BLOCKED as machine junk for conv ${conv.id}: ${JSON.stringify(body.slice(0, 120))}`);
+    db.logAudit('ai_reply_blocked_junk', { convId: conv.id, phone: contact.phone, body: body.slice(0, 200) });
+    return false;
+  }
   if (db.hasOutboundMessage(conv.id, body)) {
     log(`AI watchdog dedup: "${body}" already sent in conv ${conv.id}, skipping`);
     return false;
@@ -1318,7 +1360,7 @@ async function sendAiReplyRaw(conv, contact, text, settings) {
 // closing messages: an underwriting hand-off and a details/photos ask.
 
 async function extractLeadDetails(messages, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const convoText = messages
     .map(m => `${m.direction === 'inbound' ? 'Agent' : 'You'}: ${m.body}`)
     .join('\n');
@@ -1559,7 +1601,7 @@ function hasAnyUrl(text) { return ANY_URL_RE.test(text || ''); }
 
 // Sub-classify a who_is_this message to pick the right opener.
 async function classifyWhoIsThisSubtype(body, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 16,
@@ -1634,7 +1676,7 @@ async function generateAiReply(msgBody, history, contact, settings) {
     }
   }
 
-  const client = new Anthropic({ apiKey: settings.claudeApiKey });
+  const client = aiClient(settings.claudeApiKey);
   const myName = (settings.myName || 'Chris').replace(/\bChristian\b/g, 'Chris');
   const myLastName = settings.myLastName || '';
   const firstName = contact?.first_name || contact?.name?.split(' ')[0] || '';
@@ -2364,7 +2406,7 @@ function parseScheduleHours(text) {
 // Detect "I have it but can't share the address yet" — owner privacy, pre-market, etc.
 // Distinct from tomorrow_promise (no timeframe given here, property is confirmed).
 async function classifyAddressHold(body, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 8,
@@ -2379,7 +2421,7 @@ async function classifyAddressHold(body, apiKey) {
 
 // Classify whether an agent confirmed or denied off-market status.
 async function classifyOffMarketConfirmation(body, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 8,
@@ -2392,7 +2434,7 @@ async function classifyOffMarketConfirmation(body, apiKey) {
 // Classify whether an agent confirmed or denied being direct (to seller/agent) on a
 // multi-property pipeline claim, in response to "Are you direct on these?".
 async function classifyDirectConfirmation(body, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 8,
@@ -2409,7 +2451,7 @@ async function extractFollowUpHours(body, apiKey) {
   const dayName = now.toLocaleDateString('en-US', { weekday: 'long' });
   const dateStr = now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 16,
@@ -2436,7 +2478,7 @@ async function extractFollowUpHours(body, apiKey) {
 // Extract any condition/description detail from a single agent message.
 // Returns a plain-text string or null if the message is just chatter.
 async function extractConditionUpdate(body, apiKey) {
-  const client = new Anthropic({ apiKey });
+  const client = aiClient(apiKey);
   const response = await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
     max_tokens: 80,
@@ -4199,6 +4241,32 @@ async function pollTwilio() {
       }
     }
 
+    // ── Outage recovery: re-route replies whose classification never completed ──────
+    // An Anthropic 529, a network drop or a sleeping laptop leaves the conversation
+    // completely untouched (the category is written and ai_handled_msg_id is stamped only
+    // AFTER a successful classification), so the reply is simply still unread by the AI.
+    // This picks it up on a later poll, which is the same outcome as the message having
+    // arrived at that moment. The query is age-bounded on both sides; see
+    // getUnroutedInboundConvs. The existing 'new'-only sweep above covers first replies;
+    // this covers warm and follow_up threads, which that sweep skips.
+    if (settings.aiEnabled === 'true' && settings.claudeApiKey) {
+      const unrouted = db.getUnroutedInboundConvs();
+      for (const row of unrouted) {
+        const conv = db.getConversationById(row.id);
+        const contact = db.getContactById(row.contact_id);
+        if (!conv || !contact) continue;
+        const last = db.getRecentMessages(conv.id, 1)[0];
+        if (!last || last.direction !== 'inbound') continue;
+        log(`AI recovery: re-routing unhandled reply for conv ${conv.id} (${contact.name || contact.phone}, ${conv.category})`);
+        try {
+          await routeInboundReply(conv, contact, { body: last.body || '', from: contact.phone, media_urls: last.media_urls || '[]' }, settings);
+        } catch (recErr) {
+          // Still failing: leave it untouched so the next poll tries again.
+          log(`AI recovery: conv ${conv.id} still failing (${recErr.message}) — will retry`);
+        }
+      }
+    }
+
     // ── Queue warm drip for newly silent warm convs (24h no reply) ── Level 3 only ──
     if (settings.aiEnabled === 'true' && settings.claudeApiKey && parseInt(settings.aiLevel || '3', 10) >= 3) {
       const needsDrip = db.getWarmConvsNeedingDrip();
@@ -4876,6 +4944,8 @@ ipcMain.handle('twilio:getBlastCostEstimate', async (_, { segments, willSend }) 
 ipcMain.handle('claude:verify', async (_, apiKey) => {
   const key = apiKey || db.getSetting('claudeApiKey');
   if (!key) throw new Error('No API key provided.');
+  // Deliberately NOT aiClient: a user-initiated credential check should fail fast and tell
+  // them, not silently retry six times behind a spinner.
   const client = new Anthropic({ apiKey: key });
   await client.messages.create({
     model: 'claude-sonnet-5', thinking: { type: 'disabled' },
@@ -5054,7 +5124,10 @@ ipcMain.handle('ai:simulate', async (_, { message, history, level, hasPendingFol
     const result = await simulateLevel(level || 3);
     return { ...result, replyKey: result.replyKey || result.bucket, followUps: planFollowUps(result, buildFullMsgs(result)) };
   } catch (e) {
-    return { error: 'AI error: ' + e.message };
+    // Never surface raw API wreckage in the simulator either. Log the real thing, show a
+    // sentence that explains what actually happens in production.
+    log(`ai:simulate error: ${e.message}`);
+    return { error: friendlyAiError(e.message) };
   }
 });
 
