@@ -67,6 +67,7 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
   const [aiLevelPassword, setAiLevelPassword] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null);
   const [passwordError, setPasswordError] = useState('');
   const [aiAutoSubmit, setAiAutoSubmit] = useState(false);
   const [showAutoSubmitPasswordPrompt, setShowAutoSubmitPasswordPrompt] = useState(false);
@@ -99,20 +100,29 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [sandboxHistory, sandboxLoading]);
 
-  const handleToggleAi = async () => {
+  // Every AI control is behind the admin password, not just Level 3. On a shared install
+  // the operator should not be able to switch the AI on, or move between levels, without it.
+  // With no password set nothing is gated, so the password must be set on any machine that
+  // is handed to someone else.
+  const requestGated = (action) => {
+    if (!aiLevelPassword) { action(); return; }
+    setPendingAction(() => action);
+    setShowPasswordPrompt(true);
+    setPasswordInput('');
+    setPasswordError('');
+  };
+
+  const handleToggleAi = () => {
     const next = !aiEnabled;
-    setAiEnabled(next);
-    await window.api.saveSettings({ aiEnabled: next ? 'true' : 'false' });
+    requestGated(async () => {
+      setAiEnabled(next);
+      await window.api.saveSettings({ aiEnabled: next ? 'true' : 'false' });
+    });
   };
 
   const handleSelectLevel = (num) => {
-    if (num === 3 && aiLevelPassword) {
-      setShowPasswordPrompt(true);
-      setPasswordInput('');
-      setPasswordError('');
-      return;
-    }
-    applyLevel(num);
+    if (num === aiLevel) return; // no-op reselect needs no password
+    requestGated(() => applyLevel(num));
   };
 
   const applyLevel = async (num) => {
@@ -124,7 +134,12 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
 
   const handlePasswordSubmit = () => {
     if (passwordInput === aiLevelPassword) {
-      applyLevel(3);
+      const action = pendingAction;
+      setPendingAction(null);
+      setShowPasswordPrompt(false);
+      setPasswordInput('');
+      setPasswordError('');
+      if (action) action();
     } else {
       setPasswordError('Incorrect password.');
     }
@@ -307,11 +322,11 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
             })}
           </div>
 
-          {/* Password prompt for Level 3 */}
+          {/* Password prompt — gates every AI control, not only Level 3 */}
           {showPasswordPrompt && (
             <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--bg2)', border: '1px solid #990000' }}>
               <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, marginBottom: 6, color: 'var(--text1)' }}>
-                Enter admin password to enable Level 3:
+                Enter admin password to change AI settings:
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
@@ -325,7 +340,7 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
                   style={{ flex: 1 }}
                 />
                 <button className="btn btn-primary" onClick={handlePasswordSubmit}>Unlock</button>
-                <button className="btn" onClick={() => setShowPasswordPrompt(false)}>Cancel</button>
+                <button className="btn" onClick={() => { setShowPasswordPrompt(false); setPendingAction(null); setPasswordInput(''); setPasswordError(''); }}>Cancel</button>
               </div>
               {passwordError && (
                 <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: '#cc0000', marginTop: 4 }}>
