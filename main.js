@@ -4867,31 +4867,34 @@ async function pollTwilio() {
               // confirmed delivery four minutes after press#1 and would have been asked
               // "were you able to get my offer to the seller?" on resume.
               //
-              // On `answer` the phase moves to maintain but the schedule is left due NOW
-              // rather than sent immediately: Chris's own reply pauses it (existing §8B
-              // behaviour), and because the phase already advanced, `hot_fu_paused_from`
-              // records 'maintain' — so Resume starts the generic heartbeat instead of
-              // re-opening the press. If he never replies, maintain simply carries the
-              // pulse on the colour cadence, which is the point: no thread goes quiet
-              // for weeks on its own.
+              // THEIR answer pauses the agent (Chris, 2026-08-03) — not his reply. The
+              // moment the offer is confirmed with the seller we have what Tier 1 was for,
+              // and the thread belongs to Chris: he reads it, replies, negotiates, goes
+              // back and forth for as long as it takes. The agent must be silent for all
+              // of that. Leaving it ACTIVE in maintain would fire a generic "any updates?"
+              // on the very next poll tick, seconds after their reply and before he had
+              // even looked at it.
+              //
+              // So park it: state 'paused', with `hot_fu_paused_from` set to 'maintain'
+              // rather than 'press'. That is the whole trick — Resume reads paused_from,
+              // so when the pulse eventually dies and he switches the agent back on, it
+              // starts the generic heartbeat instead of re-asking a settled question.
               //
               // The classifier NEVER stops the agent. A `dead` verdict is treated exactly
               // like a stall, because only an unambiguous phrase (hfuDeadPhrase, above) is
               // allowed to end a chase — an LLM must not throw a live deal away.
               const { verdict } = await classifyHotFollowUpReply(msg.body, settings.claudeApiKey);
               if (verdict === 'answer') {
-                // next_at = now leaves the decision to the scheduler, which holds a
-                // colourless lead and flags it rather than guessing a cadence.
-                db.setHotFuState(conv.id, 'maintain', { hot_fu_next_at: Math.floor(Date.now() / 1000) });
+                db.setHotFuState(conv.id, 'paused', { hot_fu_next_at: null, hot_fu_paused_from: 'maintain' });
                 db.setHasNews(conv.id, true);
                 conv.has_news = true;
                 db.logHotFollowUp({
                   convId: conv.id, phase: 'press', library: '-', lineNo: 0,
-                  body: '[Tier 1 answered — offer confirmed with the seller, moving to Tier 2]',
+                  body: '[Tier 1 answered — offer confirmed with the seller. Paused for you; Resume starts Tier 2.]',
                   status: 'tier1_answered',
                 });
                 db.logAudit('hotfu_tier1_answered', { convId: conv.id, phone: msg.from });
-                log(`Hot follow-up conv ${conv.id}: Tier 1 answered → maintain (Tier 2)`);
+                log(`Hot follow-up conv ${conv.id}: Tier 1 answered → PAUSED (Resume will start Tier 2)`);
               } else {
                 log(`Hot follow-up conv ${conv.id}: reply graded '${verdict}' — staying in Tier 1 press`);
               }
