@@ -61,6 +61,112 @@ function PasswordSaveRow({ value, onChange }) {
   );
 }
 
+// Hot Follow-Up simulator. Runs the SAME cadence code the live scheduler uses, so what
+// this shows is exactly what would go out. Pure arithmetic — no API calls, no SMS.
+const HFU_DOTS = [['🟢', 'GREEN · daily'], ['🟡', 'YELLOW · every 2 days'], ['🔴', 'RED · every 14d, cold at 90'], [null, 'NO COLOR YET']];
+
+function HotFollowUpSim() {
+  const [color, setColor] = useState('🟢');
+  const [firstName, setFirstName] = useState('Piper');
+  const [address, setAddress] = useState('910 E 8th Street, Pueblo CO 81001');
+  const [answerOnDay, setAnswerOnDay] = useState(3);
+  const [pauseOnDay, setPauseOnDay] = useState('');
+  const [resumeOnDay, setResumeOnDay] = useState(5);
+  const [colorOnDay, setColorOnDay] = useState('');
+  const [days, setDays] = useState(21);
+  const [res, setRes] = useState(null);
+  const [armed, setArmed] = useState(false);
+  const [shown, setShown] = useState(0);   // fast-forward cursor
+
+  const num = (v) => (v === '' || v == null ? null : parseInt(v, 10));
+
+  const run = async (upto) => {
+    const out = await window.api.hotFuSimulate({
+      firstName, address, color, days: upto,
+      answerOnDay: num(answerOnDay), pauseOnDay: num(pauseOnDay),
+      resumeOnDay: num(resumeOnDay), colorOnDay: num(colorOnDay),
+    });
+    setRes(out); setArmed(true);
+    return out;
+  };
+
+  const onArm = async () => { const o = await run(days); setShown(Math.min(2, o.timeline.length)); };
+  const onFF = () => setRes(r => (setShown(s => Math.min(s + 1, (r?.timeline.length) || 0)), r));
+  const onFFAll = () => setShown(res ? res.timeline.length : 0);
+  const onReset = () => { setRes(null); setArmed(false); setShown(0); };
+
+  const tl = res ? res.timeline.slice(0, shown) : [];
+  const more = res ? res.timeline.length - shown : 0;
+  const sentSoFar = tl.filter(e => e.type === 'touch').length;
+
+  const ICON = { armed: '▶', touch: '💬', answer: '📩', pause: '⏸', resume: '▶', hold: '⏳', colored: '🎨', cold: '🧊', skip: '⚠️' };
+  const COL = { answer: '#0055aa', pause: '#b03a2b', resume: '#157a2b', hold: '#8a5a00', cold: '#555', skip: '#b03a2b', colored: '#6a3d9a', armed: '#000080' };
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-title">HOT FOLLOW-UP SIMULATOR — SEE THE WHOLE CADENCE</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text2)', lineHeight: 1.7, marginBottom: 8 }}>
+        Runs the real scheduler logic against a fake lead. Every message below is the exact text that would send.
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+        {HFU_DOTS.map(([dot, label]) => (
+          <button key={String(dot)} className="btn" onClick={() => { setColor(dot); onReset(); }}
+            style={{ fontSize: 10, fontWeight: color === dot ? 'bold' : 'normal',
+                     background: color === dot ? 'var(--sel-bg)' : undefined,
+                     color: color === dot ? '#fff' : undefined }}>
+            {dot || '⚪'} {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, fontFamily: 'var(--font-ui)', fontSize: 10 }}>
+        <label>Agent <input value={firstName} onChange={e => { setFirstName(e.target.value); onReset(); }} style={{ width: 70 }} /></label>
+        <label>Address <input value={address} onChange={e => { setAddress(e.target.value); onReset(); }} style={{ width: 190 }} /></label>
+        <label>Answer day <input value={answerOnDay} onChange={e => { setAnswerOnDay(e.target.value); onReset(); }} style={{ width: 34 }} /></label>
+        <label>Resume day <input value={resumeOnDay} onChange={e => { setResumeOnDay(e.target.value); onReset(); }} style={{ width: 34 }} /></label>
+        <label>You pause day <input value={pauseOnDay} onChange={e => { setPauseOnDay(e.target.value); onReset(); }} style={{ width: 34 }} /></label>
+        <label>Tagged on day <input value={colorOnDay} onChange={e => { setColorOnDay(e.target.value); onReset(); }} style={{ width: 34 }} /></label>
+        <label>Run days <input value={days} onChange={e => { setDays(parseInt(e.target.value, 10) || 21); onReset(); }} style={{ width: 40 }} /></label>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+        <button className="hotfu-btn hotfu-arm" onClick={onArm}>► Offer Sent</button>
+        <button className="aim-btn" onClick={onFF} disabled={!armed || more <= 0}><span className="aim-btn-label">⏩ Next step</span></button>
+        <button className="aim-btn" onClick={onFFAll} disabled={!armed || more <= 0}><span className="aim-btn-label">⏭ Run it all</span></button>
+        <button className="btn" onClick={onReset} disabled={!armed}>Reset</button>
+        {armed && (
+          <span style={{ fontSize: 10, fontFamily: 'var(--font-ui)', color: '#996600', alignSelf: 'center' }}>
+            {sentSoFar} message{sentSoFar === 1 ? '' : 's'} sent{more > 0 ? ` · ${more} step${more === 1 ? '' : 's'} left` : ' · done'}
+          </span>
+        )}
+      </div>
+
+      {res && (
+        <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border-sh)', background: 'var(--bg2)', padding: '6px 8px' }}>
+          {tl.map((e, i) => (
+            <div key={i} style={{ display: 'flex', gap: 7, alignItems: 'baseline', padding: '2px 0', fontFamily: 'var(--font-ui)', fontSize: 11 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: '#808080', minWidth: 30 }}>D{e.day}</span>
+              <span style={{ minWidth: 16 }}>{ICON[e.type] || '·'}</span>
+              {e.type === 'touch' ? (
+                <span style={{ flex: 1 }}>
+                  {e.body}
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: '#808080', marginLeft: 6 }}>
+                    [{e.library}#{e.lineNo}{e.wrapped ? ' ↻ repeat' : ''}]
+                  </span>
+                </span>
+              ) : (
+                <span style={{ flex: 1, color: COL[e.type] || '#555', fontStyle: 'italic' }}>{e.note}</span>
+              )}
+            </div>
+          ))}
+          {more > 0 && <div style={{ fontSize: 10, color: '#808080', fontFamily: 'var(--font-ui)', paddingTop: 4 }}>…{more} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput, setSandboxInput }) {
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiLevel, setAiLevel] = useState(2);
@@ -656,6 +762,9 @@ export default function AiTab({ sandboxHistory, setSandboxHistory, sandboxInput,
             </button>
           </div>
         </div>
+
+        {/* Hot Follow-Up simulator — deterministic, no API calls */}
+        <HotFollowUpSim />
         </>}
 
         {/* Training Data — bottom */}

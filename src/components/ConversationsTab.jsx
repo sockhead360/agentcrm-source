@@ -110,6 +110,24 @@ const CATEGORIES = {
 
 const CAT_ORDER = ['new', 'caliente', 'hot_lead', 'warm', 'not_interested'];
 
+// Hot leads carry the extracted address once the AI graduates + auto-submits them
+// (set in autoSubmitLead, main.js). Splitting it into the preview line means Chris can
+// scan the address without opening the thread — the whole point being to cut the
+// back-and-forth against the underwriting Discord channel.
+function ConvPreview({ conv, fallback }) {
+  if (conv.address && (conv.category === 'hot_lead' || conv.category === 'caliente')) {
+    return (
+      <div className="buddy-preview-split">
+        <span className="buddy-preview-msg">{conv.last_message || fallback}</span>
+        <span className="buddy-preview-sep">/</span>
+        <span className="buddy-preview-addr">{conv.address}</span>
+      </div>
+    );
+  }
+  return <div className="buddy-preview">{conv.last_message || fallback}</div>;
+}
+
+const HOT_COLOR_EMOJIS = new Set(['🔴', '🟡', '🟢']);
 const HOT_EMOJI_PRIORITY = { '🟢': 0, '🟡': 1, '🔴': 2 };
 const hotEmojiRank = (conv) => HOT_EMOJI_PRIORITY[conv.emoji] ?? 3;
 
@@ -211,6 +229,14 @@ export default function ConversationsTab({ onReadUpdate }) {
   };
 
   const handleCategoryChange = async (convId, category) => {
+    // Moving a color-tagged (red/yellow/green underwriter) lead to cold clears the tag
+    // automatically — it no longer means anything once the lead is dead.
+    // ORDER MATTERS: the clear must happen AFTER updateCategory, because that handler
+    // writes the hot-lead outcome ledger and freezes color_at_end from the live row.
+    // Clearing first would hand the ledger a null and destroy the deal-quality history
+    // the ledger exists to keep.
+    const conv = conversations.find(c => c.id === convId) || (selected?.id === convId ? selected : null);
+    const clearDotAfter = category === 'not_interested' && conv && HOT_COLOR_EMOJIS.has(conv.emoji);
     // Auto-advance to next conversation when categorizing the selected one
     if (selected?.id === convId) {
       const allFlat = CAT_ORDER.flatMap(cat => {
@@ -227,6 +253,7 @@ export default function ConversationsTab({ onReadUpdate }) {
       await window.api.updateCategory({ convId, category });
       setConversations(prev => prev.map(c => c.id === convId ? { ...c, category } : c));
     }
+    if (clearDotAfter) await applyEmoji(convId, null);
     if (category === 'not_interested' || category === 'follow_up') play('buddyout');
     else if (category === 'hot_lead' || category === 'caliente') play('buddyin');
   };
@@ -486,11 +513,14 @@ export default function ConversationsTab({ onReadUpdate }) {
                       const lastHas = (conv.last_message || '').toLowerCase().includes(lc);
                       const snip = msgMatchSnippets[conv.id];
                       const showSnip = !lastHas && snip;
-                      return (
-                        <div className="buddy-preview" style={showSnip ? { fontStyle: 'italic', color: 'var(--win-dark)' } : undefined}>
-                          {showSnip ? `“…${snip}”` : (conv.last_message || conv.brokerage || '...')}
-                        </div>
-                      );
+                      if (showSnip) {
+                        return (
+                          <div className="buddy-preview" style={{ fontStyle: 'italic', color: 'var(--win-dark)' }}>
+                            {`“…${snip}”`}
+                          </div>
+                        );
+                      }
+                      return <ConvPreview conv={conv} fallback={conv.brokerage || '...'} />;
                     })()}
                   </div>
                   <div className="buddy-meta">
@@ -555,7 +585,7 @@ export default function ConversationsTab({ onReadUpdate }) {
                       >{conv.emoji || '🏃'}</span>
                       <div className="buddy-info">
                         <div className="buddy-name">{conv.name || conv.phone}</div>
-                        <div className="buddy-preview">{conv.last_message || conv.brokerage || '...'}</div>
+                        <ConvPreview conv={conv} fallback={conv.brokerage || '...'} />
                       </div>
                       <div className="buddy-meta">
                         <span className="buddy-time">{timeAgo(conv.last_message_at)}</span>

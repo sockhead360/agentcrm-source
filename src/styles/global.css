@@ -747,6 +747,13 @@ td.muted { color: var(--win-dark); }
 .buddy-preview { font-size: 10px; color: var(--win-dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .buddy-item.active .buddy-preview { color: rgba(255,255,255,0.7); }
 
+.buddy-preview-split { font-size: 10px; display: flex; align-items: baseline; min-width: 0; }
+.buddy-preview-msg { color: var(--win-dark); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.buddy-item.active .buddy-preview-msg { color: rgba(255,255,255,0.7); }
+.buddy-preview-sep { flex: 0 0 auto; margin: 0 4px; color: var(--win-dark); opacity: 0.4; }
+.buddy-preview-addr { flex: 0 0 auto; color: var(--win-dark); white-space: nowrap; }
+.buddy-item.active .buddy-preview-addr { color: rgba(255,255,255,0.7); }
+
 .buddy-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
 .buddy-time { font-size: 9px; color: var(--win-dark); }
 .buddy-unread {
@@ -892,6 +899,47 @@ td.muted { color: var(--win-dark); }
   border-right-color: var(--border-sh);
   border-bottom-color: var(--border-sh);
 }
+
+/* Hot follow-up control — one slot, three identities, each unmistakable at a glance.
+   Offer Sent is the primary ACTION (navy, like the title bar), so it never reads as a
+   disabled label. ON is calm green. Paused is deliberately the loudest: a parked lead
+   must be something you SEE, not something that quietly disappears. */
+.hotfu-btn {
+  padding: 2px 10px;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  font-weight: bold;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  white-space: nowrap;
+  border: 2px solid;
+  border-top-color: var(--border-hi);
+  border-left-color: var(--border-hi);
+  border-right-color: var(--border-dsh);
+  border-bottom-color: var(--border-dsh);
+  background: var(--win-gray);
+  color: var(--win-black);
+}
+.hotfu-btn:disabled { opacity: 0.5; cursor: default; }
+.hotfu-btn:active:not(:disabled) {
+  border-top-color: var(--border-dsh);
+  border-left-color: var(--border-dsh);
+  border-right-color: var(--border-hi);
+  border-bottom-color: var(--border-hi);
+}
+
+/* Not armed yet — the call to action. */
+.hotfu-arm     { background: var(--title-a); color: #fff; }
+.hotfu-arm:hover:not(:disabled) { background: var(--title-b); }
+/* Running. */
+.hotfu-on      { background: #157a2b; color: #fff; }
+.hotfu-on:hover:not(:disabled) { background: #1c9636; }
+/* Armed but ungraded — blocked on you, not broken. */
+.hotfu-needscolor { background: #8a5a00; color: #fff; }
+.hotfu-needscolor:hover:not(:disabled) { background: #a86e00; }
+/* Parked. */
+.hotfu-paused  { background: #b03a2b; color: #fff; }
+.hotfu-paused:hover:not(:disabled) { background: #cc4634; }
 
 .toolbar-sep {
   width: 1px;

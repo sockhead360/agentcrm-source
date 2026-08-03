@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld('api', {
   setConversationForward: (data) => ipcRenderer.invoke('conversations:setForward', data),
   getTotalUnread: () => ipcRenderer.invoke('conversations:getTotalUnread'),
   setConversationEmoji: (data) => ipcRenderer.invoke('conversations:setEmoji', data),
+  hotFuGet: (convId) => ipcRenderer.invoke('hotfu:get', convId),
+  hotFuArm: (convId) => ipcRenderer.invoke('hotfu:arm', convId),
+  hotFuPause: (convId) => ipcRenderer.invoke('hotfu:pause', convId),
+  hotFuResume: (convId) => ipcRenderer.invoke('hotfu:resume', convId),
+  hotFuStop: (convId) => ipcRenderer.invoke('hotfu:stop', convId),
+  hotFuLog: (convId) => ipcRenderer.invoke('hotfu:log', convId),
+  hotFuSimulate: (opts) => ipcRenderer.invoke('hotfu:simulate', opts),
 
   deleteCampaign: (id) => ipcRenderer.invoke('campaigns:delete', id),
   refreshCampaignStats: (id) => ipcRenderer.invoke('campaigns:refreshStats', id),

@@ -53,6 +53,59 @@ function WarningMeter() {
   );
 }
 
+// The single follow-up affordance, far right of the formatting toolbar. It carries one
+// meaning at a time and always states the current state — §11's requirement that you
+// never have to wonder whether follow-up is running on the thread you're looking at.
+// Paused is a loud state on purpose: if forgetting is visible, forgetting is safe.
+function HotFuControl({ conv, state, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  // Hot leads only. RED HOT is deliberately excluded — those are contracts and live deals
+  // that no AI touches, so offering an arm button there would be offering a mistake.
+  if (conv.category !== 'hot_lead' || !state) return null;
+
+  const run = async (fn) => {
+    if (busy) return;
+    setBusy(true);
+    try { await fn(conv.id); await onChanged(); }
+    catch (e) { alert(e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const phase = state.state;
+  let cls = 'hotfu-btn', label, title, onClick;
+
+  if (!phase || phase === 'stopped') {
+    cls += ' hotfu-arm';
+    label = '► Offer Sent';
+    title = 'Click once after you send the offer — starts the hot follow-up agent';
+    onClick = () => run(window.api.hotFuArm);
+  } else if (phase === 'paused') {
+    cls += ' hotfu-paused';
+    label = 'Follow-up: PAUSED';
+    title = 'Follow-up is parked. Click to resume — it picks up where it left off.';
+    onClick = () => run(window.api.hotFuResume);
+  } else if (state.needsColor) {
+    // Armed and past the answer, but ungraded — so no cadence exists and nothing will
+    // send. Say so plainly instead of looking like it's working.
+    cls += ' hotfu-needscolor';
+    label = 'Follow-up: NEEDS COLOR';
+    title = 'Waiting on a red/yellow/green tag. Nothing sends until this lead is graded — it starts on its own once you tag it. Click to pause.';
+    onClick = () => run(window.api.hotFuPause);
+  } else {
+    cls += ' hotfu-on';
+    label = 'Follow-up: ON';
+    title = `Following up automatically (${phase}${state.touches ? `, ${state.touches} sent` : ''}). Click to pause.`;
+    onClick = () => run(window.api.hotFuPause);
+  }
+
+  return (
+    <>
+      <div className="toolbar-sep" style={{ marginLeft: 'auto' }} />
+      <button className={cls} title={title} onClick={onClick} disabled={busy}>{label}</button>
+    </>
+  );
+}
+
 export default function ChatWindow({ conversation, onCategoryChange, onMessageSent, onArchive, draft, onDraftChange }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState(draft || '');
@@ -114,6 +167,16 @@ export default function ChatWindow({ conversation, onCategoryChange, onMessageSe
     setForwardEnabled(next);
     await window.api.setConversationForward({ convId: conversation.id, enabled: next });
   };
+
+  // ── Hot follow-up agent state for the toolbar control ──
+  // One control slot that changes identity: Offer Sent → ON → PAUSED → OFF. Reloaded on
+  // conversation switch and after every action so the label always states the truth.
+  const [hotFu, setHotFu] = useState(null);
+  const loadHotFu = useCallback(async () => {
+    try { setHotFu(await window.api.hotFuGet(conversation.id)); }
+    catch { setHotFu(null); }
+  }, [conversation.id]);
+  useEffect(() => { loadHotFu(); }, [loadHotFu, messages.length]);
 
   const loadMessages = useCallback(async () => {
     const data = await window.api.getMessages(conversation.id);
@@ -396,6 +459,7 @@ export default function ChatWindow({ conversation, onCategoryChange, onMessageSe
         <div className="toolbar-sep" />
         <button className="toolbar-btn" style={{ color: '#0000cc', textDecoration: 'underline', fontSize: 10 }}>link</button>
         <button className="toolbar-btn" title="Emoji">🙂</button>
+        <HotFuControl conv={conversation} state={hotFu} onChanged={loadHotFu} />
       </div>
 
       {/* Input area */}

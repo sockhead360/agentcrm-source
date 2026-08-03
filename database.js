@@ -187,6 +187,79 @@ function init() {
     // messages on every clock-in.
     db.prepare("ALTER TABLE conversations ADD COLUMN ai_handled_msg_id INTEGER DEFAULT 0").run();
   }
+  if (!convCols2.includes('address')) {
+    // Set once by autoSubmitLead when the AI graduates a conversation to hot_lead — lets
+    // the conversation list preview show the address at a glance instead of Chris having
+    // to open the thread to cross-check it against the underwriting channel.
+    db.prepare("ALTER TABLE conversations ADD COLUMN address TEXT DEFAULT NULL").run();
+  }
+  // ── Hot Follow-Up Agent state ──────────────────────────────────────────────
+  // Deliberately separate from human_replied, which belongs to the warm agent and means
+  // "AI is done here forever". The hot agent has its own reversible pause, so it must not
+  // read or write that flag.
+  if (!convCols2.includes('hot_fu_state')) {
+    // null = never armed | press | paused | maintain | stopped
+    db.prepare("ALTER TABLE conversations ADD COLUMN hot_fu_state TEXT DEFAULT NULL").run();
+  }
+  if (!convCols2.includes('hot_fu_armed_at')) {
+    // Unix seconds the offer went out — starts red's 90-day clock.
+    db.prepare("ALTER TABLE conversations ADD COLUMN hot_fu_armed_at INTEGER DEFAULT NULL").run();
+  }
+  if (!convCols2.includes('hot_fu_next_at')) {
+    // Unix seconds of the next scheduled touch. Re-anchored to now on resume so a lead
+    // paused for two weeks sends ONE message, never a catch-up burst.
+    db.prepare("ALTER TABLE conversations ADD COLUMN hot_fu_next_at INTEGER DEFAULT NULL").run();
+  }
+  if (!convCols2.includes('hot_fu_paused_from')) {
+    // The phase a pause interrupted. Resume needs it because by the time you press
+    // resume, hot_fu_state is already 'paused' — without this, a lead paused mid-Tier-1
+    // would resume into Tier 2 and skip the phase whose entire job is getting an answer.
+    db.prepare("ALTER TABLE conversations ADD COLUMN hot_fu_paused_from TEXT DEFAULT NULL").run();
+  }
+  if (!convCols2.includes('has_news')) {
+    // Attention signal, deliberately independent of unread_count: "something happened that
+    // may need you" vs "the agent replied". Never merge the two.
+    db.prepare("ALTER TABLE conversations ADD COLUMN has_news INTEGER DEFAULT 0").run();
+  }
+
+  // Every hot follow-up touch, one row each. Doubles as the phrase-usage record, so
+  // "never send the same phrasing twice" survives restarts without a second table.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hot_followup_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conv_id INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      library TEXT NOT NULL,
+      line_no INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'shadow',
+      sent_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_hfu_log_conv ON hot_followup_log(conv_id)`);
+
+  // Permanent analysis ledger — one row per hot lead when follow-up ends, for any reason.
+  // Frozen copies (color, brokerage, market, prices) describe the lead AS IT WAS, so a
+  // later re-tag can't rewrite history. Live FKs (contact_id, lead_submission_id) are for
+  // facts that legitimately keep evolving — deal outcome gets set months later.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hot_lead_outcome (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conv_id INTEGER,
+      contact_id INTEGER,
+      lead_submission_id INTEGER,
+      agent_name TEXT, agent_phone TEXT, brokerage TEXT,
+      agent_city TEXT, agent_state TEXT,
+      property_address TEXT, property_city TEXT, property_state TEXT,
+      asking_price TEXT, offer_amount TEXT,
+      color_at_end TEXT,
+      followup_outcome TEXT,
+      armed_at INTEGER, ended_at INTEGER, days_active REAL,
+      touches_sent INTEGER, last_phase TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    )
+  `);
   // BACKFILL (runs every boot, idempotent): conversations handled under the OLD regime have
   // ai_handled_msg_id=0 — without this, the first clock-in after upgrading would sweep EVERY
   // historical thread whose last message is inbound (900+ on a real install) and re-route
@@ -895,6 +968,99 @@ function getTotalUnread() {
 
 function setConversationEmoji(convId, emoji) {
   db.prepare('UPDATE conversations SET emoji = ? WHERE id = ?').run(emoji || null, convId);
+}
+
+function setConversationAddress(convId, address) {
+  db.prepare('UPDATE conversations SET address = ? WHERE id = ?').run(address || null, convId);
+}
+
+// ── Hot Follow-Up Agent ───────────────────────────────────────────────────────
+
+function setHotFuState(convId, state, fields = {}) {
+  const sets = ['hot_fu_state = ?'];
+  const vals = [state];
+  for (const k of ['hot_fu_armed_at', 'hot_fu_next_at', 'hot_fu_paused_from']) {
+    if (k in fields) { sets.push(`${k} = ?`); vals.push(fields[k]); }
+  }
+  vals.push(convId);
+  db.prepare(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+function setHasNews(convId, on) {
+  db.prepare('UPDATE conversations SET has_news = ? WHERE id = ?').run(on ? 1 : 0, convId);
+}
+
+// Conversations whose next touch is due. Category is checked by the caller so the
+// reason for a skip can be logged rather than silently swallowed.
+function getDueHotFollowUps(nowSec) {
+  return db.prepare(`
+    SELECT cv.*, c.name, c.first_name, c.phone, c.brokerage, c.city, c.state
+    FROM conversations cv
+    JOIN contacts c ON c.id = cv.contact_id
+    WHERE cv.hot_fu_state IN ('press','maintain')
+      AND cv.hot_fu_next_at IS NOT NULL
+      AND cv.hot_fu_next_at <= ?
+      AND COALESCE(cv.archived, 0) = 0
+    ORDER BY cv.hot_fu_next_at ASC
+  `).all(nowSec);
+}
+
+function logHotFollowUp({ convId, phase, library, lineNo, body, status = 'shadow', sentAt = null }) {
+  return db.prepare(`
+    INSERT INTO hot_followup_log (conv_id, phase, library, line_no, body, status, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(convId, phase, library, lineNo, body, status, sentAt).lastInsertRowid;
+}
+
+// Line numbers already used from a library on this conversation, so selection can walk
+// the list instead of picking at random (which clusters and near-repeats).
+function getUsedPhraseLines(convId, library) {
+  return db.prepare(
+    'SELECT line_no FROM hot_followup_log WHERE conv_id = ? AND library = ?'
+  ).all(convId, library).map(r => r.line_no);
+}
+
+function countHotFollowUps(convId) {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM hot_followup_log WHERE conv_id = ?').get(convId);
+  return row ? row.n : 0;
+}
+
+function getHotFollowUpLog(convId) {
+  return db.prepare(
+    'SELECT * FROM hot_followup_log WHERE conv_id = ? ORDER BY id ASC'
+  ).all(convId);
+}
+
+function recordHotLeadOutcome(row) {
+  return db.prepare(`
+    INSERT INTO hot_lead_outcome (
+      conv_id, contact_id, lead_submission_id,
+      agent_name, agent_phone, brokerage, agent_city, agent_state,
+      property_address, property_city, property_state,
+      asking_price, offer_amount, color_at_end, followup_outcome,
+      armed_at, ended_at, days_active, touches_sent, last_phase
+    ) VALUES (
+      @conv_id, @contact_id, @lead_submission_id,
+      @agent_name, @agent_phone, @brokerage, @agent_city, @agent_state,
+      @property_address, @property_city, @property_state,
+      @asking_price, @offer_amount, @color_at_end, @followup_outcome,
+      @armed_at, @ended_at, @days_active, @touches_sent, @last_phase
+    )
+  `).run({
+    conv_id: null, contact_id: null, lead_submission_id: null,
+    agent_name: null, agent_phone: null, brokerage: null, agent_city: null, agent_state: null,
+    property_address: null, property_city: null, property_state: null,
+    asking_price: null, offer_amount: null, color_at_end: null, followup_outcome: null,
+    armed_at: null, ended_at: null, days_active: null, touches_sent: null, last_phase: null,
+    ...row,
+  }).lastInsertRowid;
+}
+
+function getLatestLeadSubmissionIdForContact(contactId) {
+  const row = db.prepare(
+    'SELECT id FROM lead_submissions WHERE contact_id = ? ORDER BY id DESC LIMIT 1'
+  ).get(contactId);
+  return row ? row.id : null;
 }
 
 function getContactById(id) {
@@ -1770,7 +1936,8 @@ module.exports = {
   resetList,
   resetCampaign,
   getConversations, searchConversations, getConversationsForExport, getOrCreateConversation, getMessages, getRecentMessages, hasOutboundMessage, markHumanReplied, archiveConversation, unarchiveConversation, deleteConversation,
-  addMessage, markConversationRead, markAiHandled, updateConversationCategory, setConversationForward, isConversationForwarding, getTotalUnread, setConversationEmoji,
+  addMessage, markConversationRead, markAiHandled, updateConversationCategory, setConversationForward, isConversationForwarding, getTotalUnread, setConversationEmoji, setConversationAddress,
+  setHotFuState, setHasNews, getDueHotFollowUps, logHotFollowUp, getUsedPhraseLines, countHotFollowUps, getHotFollowUpLog, recordHotLeadOutcome, getLatestLeadSubmissionIdForContact,
   addStoppedNumber, isPhoneStopped, markImportedExclusions,
   getColdMessageExamples,
   renameContact,
