@@ -3334,11 +3334,6 @@ function withinSendingHours(settings) {
 // turns it live is marked below; until then no code path here can text anyone.
 const HFU_SHADOW_MODE = false;
 
-// Ceiling on leads armed at once (press + maintain + paused). The hot agent has no
-// automatic wind-down — it runs until Chris pauses it or the seller says the deal is
-// gone — so this is the hard cap on how much it can be doing at any moment.
-const HFU_MAX_ARMED = 2;
-
 function hfuColorOf(conv) {
   return HFU_INTERVAL_HOURS[conv.emoji] ? conv.emoji : null;
 }
@@ -5570,15 +5565,12 @@ ipcMain.handle('hotfu:arm', (_, convId) => {
   if (conv.category === 'caliente') {
     throw new Error('RED HOT leads are handled entirely by you — no AI follow-up runs on them.');
   }
-  // Blast-radius ceiling. This agent texts daily and only stops when you pause it or the
-  // seller says the deal is gone, so the number of leads it can chase at once is capped by
-  // hand rather than by any automatic wind-down. Raise HFU_MAX_ARMED as trust builds.
-  if (conv.hot_fu_state !== 'press' && conv.hot_fu_state !== 'maintain' && conv.hot_fu_state !== 'paused') {
-    const armed = db.countArmedHotFollowUps();
-    if (armed >= HFU_MAX_ARMED) {
-      throw new Error(`Follow-up ceiling reached — ${armed} of ${HFU_MAX_ARMED} leads are already armed. Stop one before arming another.`);
-    }
-  }
+  // No ceiling on armed leads (Chris, 2026-08-03). There was a cap of 2 here from the
+  // shadow-mode flip, when nothing had been observed running live. It has since been
+  // watched end to end on a real thread, and every lead it chases is one Chris armed by
+  // hand on a lead he already sent an offer on — capping that just blocks real work.
+  // Volume is still bounded where it belongs: assertCanSend enforces the per-number 24h
+  // breaker and the global daily cap on every send this agent makes.
   const now = Math.floor(Date.now() / 1000);
   db.setHotFuState(convId, 'press', { hot_fu_armed_at: now, hot_fu_next_at: now });
   db.logAudit('hotfu_armed', { convId });
