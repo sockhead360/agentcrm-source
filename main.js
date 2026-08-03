@@ -5571,9 +5571,21 @@ ipcMain.handle('hotfu:arm', (_, convId) => {
   // hand on a lead he already sent an offer on — capping that just blocks real work.
   // Volume is still bounded where it belongs: assertCanSend enforces the per-number 24h
   // breaker and the global daily cap on every send this agent makes.
+  // The first touch NEVER lands the same day (Chris, 2026-08-03). Arming used to set
+  // hot_fu_next_at = now, so the opening "Were you able to present my offer?" went out on
+  // the next poll tick — measured at 36 seconds after the offer itself on Melinda Love's
+  // thread. Asking whether an offer was presented moments after sending it reads as either
+  // a bot or an amateur, and it costs credibility with the agent for nothing: there is no
+  // world in which they have an answer that fast.
+  //
+  // dripSendAt(24) puts it on tomorrow at a randomised civil hour (9am-7pm ET), the same
+  // scheduler the warm drip uses, so the first press reads like a person following up the
+  // next day rather than a timer firing.
+  const settings = db.getAllSettings();
   const now = Math.floor(Date.now() / 1000);
-  db.setHotFuState(convId, 'press', { hot_fu_armed_at: now, hot_fu_next_at: now });
-  db.logAudit('hotfu_armed', { convId });
+  const firstTouch = dripSendAt(24, settings);
+  db.setHotFuState(convId, 'press', { hot_fu_armed_at: now, hot_fu_next_at: firstTouch });
+  db.logAudit('hotfu_armed', { convId, firstTouchAt: new Date(firstTouch * 1000).toISOString() });
   log(`Hot follow-up ARMED on conv ${convId} — Tier 1 press begins`);
   return true;
 });
