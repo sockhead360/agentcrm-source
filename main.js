@@ -4860,43 +4860,48 @@ async function pollTwilio() {
               conv.has_news = true; // keep the in-memory row current for the notify check below
               log(`Hot follow-up STOPPED conv ${conv.id} — seller said "${deadPhrase}"`);
 
-            } else if (armedRow.hot_fu_state === 'press' && settings.claudeApiKey) {
-              // ── Tier 1 → Tier 2 handoff (Chris, 2026-08-03) ────────────────────
-              // Tier 1 exists to answer ONE question: is my offer in front of the seller?
-              // Once it is, pressing again asks something already settled — Devin Dooley
-              // confirmed delivery four minutes after press#1 and would have been asked
-              // "were you able to get my offer to the seller?" on resume.
+            } else if ((armedRow.hot_fu_state === 'press' || armedRow.hot_fu_state === 'maintain') && settings.claudeApiKey) {
+              // ── A real reply from THEM parks the agent (Chris, 2026-08-03) ─────
+              // Applies in BOTH tiers, because the principle is the same in both: the
+              // moment they tell us something real, the thread belongs to Chris. He reads
+              // it, replies, negotiates, goes back and forth for as long as it takes, and
+              // the agent is silent throughout. It only speaks again when he switches it
+              // back on. Leaving it running would fire the next scheduled line seconds
+              // after their reply, asking for an update he was just given.
               //
-              // THEIR answer pauses the agent (Chris, 2026-08-03) — not his reply. The
-              // moment the offer is confirmed with the seller we have what Tier 1 was for,
-              // and the thread belongs to Chris: he reads it, replies, negotiates, goes
-              // back and forth for as long as it takes. The agent must be silent for all
-              // of that. Leaving it ACTIVE in maintain would fire a generic "any updates?"
-              // on the very next poll tick, seconds after their reply and before he had
-              // even looked at it.
+              //   Tier 1 (press) — presses one question: is my offer in front of the
+              //     seller? Confirmation settles it, so there is nothing left to press for.
+              //   Tier 2 (maintain) — the generic heartbeat. A real update is exactly what
+              //     the heartbeat was fishing for, so it parks on the same rule.
               //
-              // So park it: state 'paused', with `hot_fu_paused_from` set to 'maintain'
-              // rather than 'press'. That is the whole trick — Resume reads paused_from,
-              // so when the pulse eventually dies and he switches the agent back on, it
-              // starts the generic heartbeat instead of re-asking a settled question.
+              // Either way `hot_fu_paused_from` is set to 'maintain', never 'press'. That
+              // single field is the whole mechanism: Resume reads it, so switching the
+              // agent back on always starts the generic heartbeat and never re-opens a
+              // settled question. Off and on again keeps it generic, permanently.
+              //
+              // A stall does NOT park — "I'll get it to them today" in Tier 1 or "nothing
+              // yet" in Tier 2 is precisely when the chase should continue on cadence.
               //
               // The classifier NEVER stops the agent. A `dead` verdict is treated exactly
               // like a stall, because only an unambiguous phrase (hfuDeadPhrase, above) is
               // allowed to end a chase — an LLM must not throw a live deal away.
+              const fromPhase = armedRow.hot_fu_state;
               const { verdict } = await classifyHotFollowUpReply(msg.body, settings.claudeApiKey);
               if (verdict === 'answer') {
                 db.setHotFuState(conv.id, 'paused', { hot_fu_next_at: null, hot_fu_paused_from: 'maintain' });
                 db.setHasNews(conv.id, true);
                 conv.has_news = true;
                 db.logHotFollowUp({
-                  convId: conv.id, phase: 'press', library: '-', lineNo: 0,
-                  body: '[Tier 1 answered — offer confirmed with the seller. Paused for you; Resume starts Tier 2.]',
-                  status: 'tier1_answered',
+                  convId: conv.id, phase: fromPhase, library: '-', lineNo: 0,
+                  body: fromPhase === 'press'
+                    ? '[Tier 1 answered — offer confirmed with the seller. Paused for you; Resume starts Tier 2.]'
+                    : '[They replied with a real update. Paused for you; Resume continues Tier 2.]',
+                  status: 'answered_parked',
                 });
-                db.logAudit('hotfu_tier1_answered', { convId: conv.id, phone: msg.from });
-                log(`Hot follow-up conv ${conv.id}: Tier 1 answered → PAUSED (Resume will start Tier 2)`);
+                db.logAudit('hotfu_answered_parked', { convId: conv.id, phone: msg.from, fromPhase });
+                log(`Hot follow-up conv ${conv.id}: answered in ${fromPhase} → PAUSED (Resume starts Tier 2)`);
               } else {
-                log(`Hot follow-up conv ${conv.id}: reply graded '${verdict}' — staying in Tier 1 press`);
+                log(`Hot follow-up conv ${conv.id}: reply graded '${verdict}' — continuing ${fromPhase}`);
               }
             }
           }
