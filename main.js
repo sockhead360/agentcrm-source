@@ -524,6 +524,23 @@ function detectDismissiveNonAnswer(body = '') {
 // follow-up still lands as a backup if they don't send it.
 const CONFIRMED_HAS_PROPERTY_RE = /\bi do\b|\bi have (?:one|something|it|a (?:property|deal|listing|house))\b|^yes\b/i;
 
+// Bare affirmative answer to the blast opener. Anchored to the WHOLE trimmed message (^...$)
+// so it only fires when the affirmative is the entire reply — "yes" mid-sentence never trips
+// it, and anything carrying extra meaning ("yes but it's listed") falls through to the model
+// with its full context. Optional leading greeting and trailing punctuation/emoji are allowed
+// because they carry no meaning. Kept tight on purpose: every phrase here is one we are
+// willing to warm on sight. See the call site for why this is an allowlist.
+const BARE_AFFIRMATIVE_RE = new RegExp(
+  '^\\s*(?:(?:hi|hey|hello|yo|hi there|hey there)[,! ]*)?' +
+  '(?:' +
+    'yes|yes\\s+i\\s+do|yes\\s+sir|yes\\s+ma.?am|yep|yup|yeah|yea|ya|' +
+    'i\\s+do|i\\s+do\\s+have\\s+(?:one|some|a\\s+few)|i\\s+have\\s+(?:one|some|a\\s+few)|' +
+    'sure|sure\\s+do|absolutely|definitely|certainly|correct|affirmative' +
+  ')' +
+  '(?:\\s*(?:sir|ma.?am))?[\\s.!,]*$',
+  'i'
+);
+
 function timeframeDeferralReply(msgBody) {
   if (CONFIRMED_HAS_PROPERTY_RE.test(msgBody || '')) {
     return "Perfect, if you're able to send the address and asking price now I'll take a look right away — if not, no worries, I'll check back then.";
@@ -1836,6 +1853,27 @@ async function generateAiReply(msgBody, history, contact, settings) {
   // which parks it warm (deflect for the address, or flag 🤝 for a manual call).
   if (detectCallScheduleNoProperty(msgBody) && !containsStreetAddress(msgBody) && !containsPrice(msgBody) && !CONFIRMED_HAS_PROPERTY_RE.test(msgBody)) {
     return { category: 'not_interested', reply: null, bucket: 'call_schedule_no_property', scheduleHours: null };
+  }
+
+  // Bare affirmative to the blast opener ("Yes", "I do", "Yep") — the agent is saying they
+  // HAVE something. Answering the opener affirmatively is the single highest-value reply we
+  // get, and it must never be a coin flip.
+  //
+  // Proven necessary 2026-08-03: two byte-identical "Yes" replies arrived minutes apart on
+  // the same code path (Phase 1 / Level 3) and the model sent one to warm and the other to
+  // follow_up (bucket 'bare_yes_no_context', a label it invented). Same failure mode already
+  // documented above for passive-search and call-scheduling: the written rule is right, the
+  // model just doesn't apply it consistently.
+  //
+  // This is deliberately an ALLOWLIST, not the old `affirmative_short` BLOCKLIST that was
+  // removed. That one treated any short non-negative reply as warm, so everything it failed
+  // to recognize ("kindly fuck off", "0", "take me off your list") defaulted to warm. An
+  // allowlist fails the other way: anything not matched falls through to the model exactly as
+  // it does today, so this can add false warms only for the literal phrases listed here.
+  // It also runs LAST, after every cold detector above, so hostility, opt-outs, role reversal
+  // and the rest still win on a message that happens to contain one of these words.
+  if (BARE_AFFIRMATIVE_RE.test(msgBody)) {
+    return { category: 'warm', reply: r('signal'), bucket: 'bare_affirmative', scheduleHours: null };
   }
 
   const convoText = (history || [])
