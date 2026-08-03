@@ -1994,7 +1994,7 @@ module.exports = {
   createWarmDrip, getDueWarmDrips, markWarmDripSent, cancelWarmDrips, getLastSentDripStep, hasPendingWarmDrip, getOrphanedNewConversations, cancelPendingFollowUps, getWarmConvsNeedingDrip,
   getDripCycle, getUsedDripVariants, countSentDrips, archiveWarmDrips,
   batchInsertAiExamples, clearAiExamples, countAiExamples, getRelevantExamples,
-  getConversationById, hasInboundSince, getUnhandledInboundConvs, getLastInboundMessage,
+  getConversationById, hasInboundSince, getUnhandledInboundConvs, getUnroutedInboundConvs, getLastInboundMessage,
   isRelaySid, addRelayLog, getForwardingConversations,
   getAllFollowUpContacts, getFollowUpContactsForCampaign, getCampaignConversationStats, getLeadKPIsByCampaign, getLeadPipelineStats,
   getConversationDepthStats,
