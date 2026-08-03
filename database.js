@@ -1005,6 +1005,16 @@ function getDueHotFollowUps(nowSec) {
   `).all(nowSec);
 }
 
+// How many leads are currently armed. Backs the ceiling in the arm handler — this agent
+// texts on a daily cadence with no auto-stop, so the blast radius is capped by hand.
+function countArmedHotFollowUps() {
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM conversations
+    WHERE hot_fu_state IN ('press','maintain','paused')
+      AND COALESCE(archived, 0) = 0
+  `).get().n;
+}
+
 function logHotFollowUp({ convId, phase, library, lineNo, body, status = 'shadow', sentAt = null }) {
   return db.prepare(`
     INSERT INTO hot_followup_log (conv_id, phase, library, line_no, body, status, sent_at)
@@ -1937,7 +1947,7 @@ module.exports = {
   resetCampaign,
   getConversations, searchConversations, getConversationsForExport, getOrCreateConversation, getMessages, getRecentMessages, hasOutboundMessage, markHumanReplied, archiveConversation, unarchiveConversation, deleteConversation,
   addMessage, markConversationRead, markAiHandled, updateConversationCategory, setConversationForward, isConversationForwarding, getTotalUnread, setConversationEmoji, setConversationAddress,
-  setHotFuState, setHasNews, getDueHotFollowUps, logHotFollowUp, getUsedPhraseLines, countHotFollowUps, getHotFollowUpLog, recordHotLeadOutcome, getLatestLeadSubmissionIdForContact,
+  setHotFuState, setHasNews, getDueHotFollowUps, countArmedHotFollowUps, logHotFollowUp, getUsedPhraseLines, countHotFollowUps, getHotFollowUpLog, recordHotLeadOutcome, getLatestLeadSubmissionIdForContact,
   addStoppedNumber, isPhoneStopped, markImportedExclusions,
   getColdMessageExamples,
   renameContact,

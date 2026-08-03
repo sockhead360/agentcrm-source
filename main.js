@@ -3267,7 +3267,12 @@ function withinSendingHours(settings) {
 // PHASE 1 SHADOW MODE: this computes exactly what it would send and records it in
 // hot_followup_log with status 'shadow'. It does NOT call Twilio. The single line that
 // turns it live is marked below; until then no code path here can text anyone.
-const HFU_SHADOW_MODE = true;
+const HFU_SHADOW_MODE = false;
+
+// Ceiling on leads armed at once (press + maintain + paused). The hot agent has no
+// automatic wind-down — it runs until Chris pauses it or the seller says the deal is
+// gone — so this is the hard cap on how much it can be doing at any moment.
+const HFU_MAX_ARMED = 2;
 
 function hfuColorOf(conv) {
   return HFU_INTERVAL_HOURS[conv.emoji] ? conv.emoji : null;
@@ -3388,12 +3393,45 @@ async function sendDueHotFollowUps(settings) {
       const body = hfuFill(pick.body, tokens);
 
       if (HFU_SHADOW_MODE) {
-        // ── The only difference between shadow and live. Nothing below touches Twilio. ──
+        // ── The only difference between shadow and live. ──
         db.logHotFollowUp({
           convId: conv.id, phase: conv.hot_fu_state, library,
           lineNo: pick.lineNo, body, status: 'shadow',
         });
         log(`Hot follow-up [SHADOW] conv ${conv.id} ${conv.hot_fu_state}/${library}#${pick.lineNo}${pick.wrapped ? ' (wrapped)' : ''}: ${body}`);
+      } else {
+        // Same door every other agent sends through: A2P, kill switch, opt-out, per-number
+        // 24h breaker, global daily cap. A blocked send holds the cadence and retries on
+        // the next tick rather than burning the slot.
+        // contact is nullable above (hfuTokens falls back to conv), so the row's own phone
+        // is the source of truth for where this goes.
+        const toPhone = contact?.phone || conv.phone;
+        try {
+          if (!toPhone) throw new Error('no phone on conversation');
+          assertCanSend(toPhone, settings);
+        } catch (guardErr) {
+          db.logHotFollowUp({
+            convId: conv.id, phase: conv.hot_fu_state, library, lineNo: pick.lineNo,
+            body: `[blocked — ${guardErr.message}]`, status: 'blocked',
+          });
+          log(`Hot follow-up blocked for conv ${conv.id} (${toPhone || 'no phone'}): ${guardErr.message}`);
+          hfuScheduleNext(conv.id, conv, now);
+          continue;
+        }
+        const outBody = sanitizeForGSM7(body);
+        await twilio.sendSMS(
+          settings.accountSid, settings.authToken, settings.phoneNumber,
+          toPhone, outBody, settings.messagingServiceSid
+        );
+        db.addMessage(conv.id, outBody, 'outbound', null, null);
+        db.incrementDailyCount();
+        aiMarkRead(conv.id);
+        db.logHotFollowUp({
+          convId: conv.id, phase: conv.hot_fu_state, library,
+          lineNo: pick.lineNo, body: outBody, status: 'sent', sentAt: now,
+        });
+        db.logAudit('hot_follow_up_sent', { convId: conv.id, phone: toPhone, phase: conv.hot_fu_state, library, lineNo: pick.lineNo });
+        log(`Hot follow-up SENT conv ${conv.id} ${conv.hot_fu_state}/${library}#${pick.lineNo}${pick.wrapped ? ' (wrapped)' : ''}: ${outBody}`);
       }
 
       if (pick.wrapped) {
@@ -3404,6 +3442,50 @@ async function sendDueHotFollowUps(settings) {
       log(`Hot follow-up error on conv ${conv.id}: ${err.message}`);
     }
   }
+}
+
+// ── The ONLY automatic stop (Chris, 2026-08-02) ────────────────────────────────
+// Post-offer, the drip runs until Chris pauses it in the chat window. The one exception
+// is a seller saying, with zero ambiguity, that the opportunity no longer exists.
+//
+// Deliberately a literal phrase matcher and NOT classifyHotFollowUpReply: a regex cannot
+// hallucinate a "dead" and throw away a live deal. Precision over recall on purpose — a
+// missed kill phrase costs one more text, a false one costs the deal.
+//
+// Under contract / pending / contingent are NOT here and must never be added. Deals fall
+// apart and we hold the backup position.
+const HFU_DEAD_PATTERNS = [
+  // sold
+  /\b(?:it|house|home|property|place|one)\s*(?:'s|s|\s+is|\s+was|\s+has\s+been|\s+been)?\s*sold\b/i,
+  /\b(?:we|i|they|owner|seller)\s+(?:already\s+|just\s+)?sold\s+(?:it|that|the\b)/i,
+  /\balready\s+sold\b/i,
+  /\bsold\s+(?:it|already|last\s+\w+)\b/i,
+  // don't have it
+  /\b(?:don'?t|do\s+not|dont)\s+have\s+(?:it|that|the\s+\w+)\b/i,
+  /\bno\s+longer\s+have\b/i,
+  // gone
+  /\b(?:it|house|home|property|place)\s*(?:'s|s|\s+is|\s+has\s+been)?\s*gone\b/i,
+  // closed
+  /\b(?:we|i|they)\s+(?:already\s+)?closed\s+(?:on\s+)?(?:it|that|the\b)/i,
+  /\b(?:it|we)\s+(?:already\s+)?closed\s+(?:last|on|yesterday|already)\b/i,
+  /\balready\s+closed\b/i,
+];
+
+// Any of these anywhere in the message vetoes the whole thing. Covers negation
+// ("it hasn't sold"), hypotheticals ("if it sells"), and intent ("trying to sell") —
+// every one of which would otherwise trip a pattern above.
+const HFU_DEAD_VETO = /\b(?:not|isn'?t|ain'?t|hasn'?t|haven'?t|hadn'?t|didn'?t|don'?t\s+think|doesn'?t|won'?t|never|almost|nearly|if|when|once|unless|hope|hoping|trying|try|about\s+to|going\s+to|gonna|want\s+to|wanna|plan\s+to|should|would|could|might|maybe|may)\b/i;
+
+// Returns the matched phrase (for the log/ledger) or null. Caller decides what to do.
+function hfuDeadPhrase(body) {
+  const raw = String(body || '').trim();
+  if (!raw) return null;
+  if (HFU_DEAD_VETO.test(raw)) return null;
+  for (const re of HFU_DEAD_PATTERNS) {
+    const m = raw.match(re);
+    if (m) return m[0];
+  }
+  return null;
 }
 
 // Terminal transition. Writes the permanent ledger row, then parks the lead. Color is
@@ -4691,6 +4773,29 @@ async function pollTwilio() {
         // and the message is routed normally below.
         db.cancelWarmDrips(conv.id);
 
+        // ── Hot agent: the one automatic stop ──────────────────────────────────
+        // Runs here, not in routeInboundReply — that returns early on human_replied, and
+        // sending the offer sets human_replied, so an armed lead's replies never reach it.
+        // Runs regardless of the AI switch: this only ever stops a drip, never sends.
+        try {
+          const armedRow = db.getConversationById(conv.id);
+          if (armedRow && (armedRow.hot_fu_state === 'press' || armedRow.hot_fu_state === 'maintain')) {
+            const deadPhrase = hfuDeadPhrase(msg.body);
+            if (deadPhrase) {
+              db.logHotFollowUp({
+                convId: conv.id, phase: armedRow.hot_fu_state, library: '-', lineNo: 0,
+                body: `[stopped — seller said the deal is gone: "${deadPhrase}"]`,
+                status: 'stopped_deal_gone',
+              });
+              hfuFinish(armedRow, 'deal_gone');
+              db.setHasNews(conv.id, true);
+              log(`Hot follow-up STOPPED conv ${conv.id} — seller said "${deadPhrase}"`);
+            }
+          }
+        } catch (hfuErr) {
+          log(`Hot follow-up dead-phrase check failed on conv ${conv.id}: ${hfuErr.message}`);
+        }
+
         // Whitelisted test numbers always reset to 'new' so they can be re-tested repeatedly
         if (db.isPhoneWhitelisted(msg.from) && conv.category !== 'new') {
           db.updateConversationCategory(conv.id, 'new');
@@ -5343,6 +5448,15 @@ ipcMain.handle('hotfu:arm', (_, convId) => {
   // UI to hide the button.
   if (conv.category === 'caliente') {
     throw new Error('RED HOT leads are handled entirely by you — no AI follow-up runs on them.');
+  }
+  // Blast-radius ceiling. This agent texts daily and only stops when you pause it or the
+  // seller says the deal is gone, so the number of leads it can chase at once is capped by
+  // hand rather than by any automatic wind-down. Raise HFU_MAX_ARMED as trust builds.
+  if (conv.hot_fu_state !== 'press' && conv.hot_fu_state !== 'maintain' && conv.hot_fu_state !== 'paused') {
+    const armed = db.countArmedHotFollowUps();
+    if (armed >= HFU_MAX_ARMED) {
+      throw new Error(`Follow-up ceiling reached — ${armed} of ${HFU_MAX_ARMED} leads are already armed. Stop one before arming another.`);
+    }
   }
   const now = Math.floor(Date.now() / 1000);
   db.setHotFuState(convId, 'press', { hot_fu_armed_at: now, hot_fu_next_at: now });
