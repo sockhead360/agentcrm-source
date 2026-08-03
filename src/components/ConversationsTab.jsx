@@ -133,6 +133,13 @@ const hotEmojiRank = (conv) => HOT_EMOJI_PRIORITY[conv.emoji] ?? 3;
 
 const KEY_TO_EMOJI = { r: '🔴', y: '🟡', g: '🟢' };
 
+// Purely visual declutter (Chris, 2026-08-02): hide a whole category out of the list —
+// no header, no rows — separate from "collapse" which still shows the header + count.
+// Doesn't touch categorization, the AI, or any DB state; only which categories are drawn.
+// New is hideable too but starts visible (not hidden by default) — the plan if the AI
+// is ever off is to hit N and check it by eye rather than rely on a ping.
+const HIDE_KEY_TO_CAT = { n: 'new', w: 'warm', c: 'not_interested' };
+
 function timeAgo(dateStr) {
   if (!dateStr) return '';
   const iso = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
@@ -148,6 +155,10 @@ export default function ConversationsTab({ onReadUpdate }) {
   const [selected, setSelected] = useState(null);
   const [collapsed, setCollapsed] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('agentcrm_collapsed_cats') || '[]')); }
+    catch { return new Set(); }
+  });
+  const [hiddenCats, setHiddenCats] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('agentcrm_hidden_cats') || '[]')); }
     catch { return new Set(); }
   });
   const [dragOverGroup, setDragOverGroup] = useState(null);
@@ -267,6 +278,15 @@ export default function ConversationsTab({ onReadUpdate }) {
     });
   };
 
+  const toggleHidden = useCallback((catKey) => {
+    setHiddenCats(prev => {
+      const next = new Set(prev);
+      next.has(catKey) ? next.delete(catKey) : next.add(catKey);
+      localStorage.setItem('agentcrm_hidden_cats', JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
   const handleEmojiIconClick = (e, convId) => {
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
@@ -357,7 +377,7 @@ export default function ConversationsTab({ onReadUpdate }) {
       return conversations.filter(c => matchesSearch(c, q));
     }
     return CAT_ORDER.flatMap(cat => {
-      if (collapsed.has(cat)) return [];
+      if (hiddenCats.has(cat) || collapsed.has(cat)) return [];
       let convs;
       if (cat === 'not_interested') {
         convs = conversations.filter(c => c.category === 'not_interested' || c.category === 'follow_up');
@@ -373,7 +393,7 @@ export default function ConversationsTab({ onReadUpdate }) {
       }
       return convs;
     });
-  }, [conversations, searchQuery, collapsed, matchesSearch]);
+  }, [conversations, searchQuery, collapsed, hiddenCats, matchesSearch]);
 
   // Arrow key navigation through the conversation list, plus R/Y/G to stamp the
   // selected conversation with a red/yellow/green dot without opening the picker.
@@ -396,6 +416,15 @@ export default function ConversationsTab({ onReadUpdate }) {
         return;
       }
 
+      // W / C toggle Warm / Cold visibility — works anywhere in the list, no selection
+      // needed, since it's a display filter, not an action on a specific conversation.
+      const hideCat = HIDE_KEY_TO_CAT[e.key.toLowerCase()];
+      if (hideCat && !emojiPicker) {
+        e.preventDefault();
+        toggleHidden(hideCat);
+        return;
+      }
+
       const dot = KEY_TO_EMOJI[e.key.toLowerCase()];
       if (!dot || !selected || emojiPicker) return;
       e.preventDefault();
@@ -403,7 +432,7 @@ export default function ConversationsTab({ onReadUpdate }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selected, emojiPicker, getVisibleConvs, handleSelect, applyEmoji]);
+  }, [selected, emojiPicker, getVisibleConvs, handleSelect, applyEmoji, toggleHidden]);
 
   // Scroll the active buddy-item into view whenever selection changes
   useEffect(() => {
@@ -452,6 +481,30 @@ export default function ConversationsTab({ onReadUpdate }) {
             title="Auto-sort incoming 'no' replies to Cold when enabled"
           >
             AI: {aiEnabled ? 'ON' : 'OFF'}
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginLeft: 4, opacity: hiddenCats.has('new') ? 1 : 0.75 }}
+            onClick={() => toggleHidden('new')}
+            title={`${hiddenCats.has('new') ? 'Show' : 'Hide'} New — visual only, nothing stops running (press N)`}
+          >
+            {hiddenCats.has('new') ? `🆕 New hidden (${groups.new?.length || 0})` : '🆕 Hide New'}
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginLeft: 4, opacity: hiddenCats.has('warm') ? 1 : 0.75 }}
+            onClick={() => toggleHidden('warm')}
+            title={`${hiddenCats.has('warm') ? 'Show' : 'Hide'} Warm — visual only, nothing stops running (press W)`}
+          >
+            {hiddenCats.has('warm') ? `🌤️ Warm hidden (${groups.warm?.length || 0})` : '🌤️ Hide Warm'}
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginLeft: 4, opacity: hiddenCats.has('not_interested') ? 1 : 0.75 }}
+            onClick={() => toggleHidden('not_interested')}
+            title={`${hiddenCats.has('not_interested') ? 'Show' : 'Hide'} Cold — visual only, nothing stops running (press C)`}
+          >
+            {hiddenCats.has('not_interested') ? `🧊 Cold hidden (${groups.not_interested?.length || 0})` : '🧊 Hide Cold'}
           </button>
         </div>
       </div>
@@ -530,6 +583,7 @@ export default function ConversationsTab({ onReadUpdate }) {
                 </div>
               ));
             })() : CAT_ORDER.map(catKey => {
+              if (hiddenCats.has(catKey)) return null;
               let convs = groups[catKey];
               if (!convs || convs.length === 0) return null;
               if (catKey === 'hot_lead') {
@@ -621,7 +675,7 @@ export default function ConversationsTab({ onReadUpdate }) {
               <div className="chat-empty-icon">💬</div>
               <div className="chat-empty-text">Select a conversation</div>
               <div style={{ fontSize: 11, color: 'var(--win-dark)', marginTop: 4, fontFamily: 'var(--font-ui)' }}>
-                Drag contacts between groups · Click ▼ to collapse
+                Drag contacts between groups · Click ▼ to collapse · N/W/C to hide New/Warm/Cold
               </div>
               <button
                 className="btn btn-primary"

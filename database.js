@@ -961,8 +961,15 @@ function isConversationForwarding(convId) {
   return row ? !!row.forward_enabled : false;
 }
 
+// Scoped to what should actually pull Chris's attention (Chris, 2026-08-02): hot leads
+// and hot-agent news. Warm/cold still accrue unread_count per conversation for skimming —
+// this only feeds the dock badge and the orange chip next to Conversations, not the
+// per-row count, so nothing about warm/cold visibility changes, only what pings.
 function getTotalUnread() {
-  const row = db.prepare('SELECT SUM(unread_count) as total FROM conversations').get();
+  const row = db.prepare(`
+    SELECT SUM(unread_count) as total FROM conversations
+    WHERE category IN ('hot_lead', 'caliente') OR COALESCE(has_news, 0) = 1
+  `).get();
   return row ? (row.total || 0) : 0;
 }
 

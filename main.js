@@ -954,28 +954,40 @@ function updateBadge() {
   if (app.dock) app.dock.setBadge(String(db.getTotalUnread() || ''));
 }
 
-// Categories the AI silently handles — no ping, no orange unread badge (partner
-// workflow request 2026-07-14). follow_up is grouped under COLD in the inbox UI, so
-// it counts as cold here. Everything else (warm/hot_lead/caliente, or an unclassified
-// 'new' left by a classifier error) still pings so a human sees genuine leads.
-const AI_COLD_SILENT_CATEGORIES = new Set(['not_interested', 'follow_up']);
+// Attention rule (Chris, 2026-08-02): sound + the orange badge are reserved for hot
+// leads and hot-agent news now that the AI can generate hot leads on its own. Every
+// other category — new/warm/cold — still gets replied to, still gets worked by the AI,
+// and still carries its own per-conversation unread count for when Chris skims/audits —
+// they just don't interrupt. If the AI is ever off, Chris unhides New with the keyboard
+// shortcut (ConversationsTab) and checks it by eye rather than relying on a ping.
+function shouldNotifyForConv(conv) {
+  if (!conv) return true; // unknown state — ping rather than go silent
+  if (conv.category === 'hot_lead' || conv.category === 'caliente') return true;
+  return !!conv.has_news;
+}
+
+// Cold/follow_up are handled entirely by the AI (partner workflow request 2026-07-14) —
+// auto-marked read so no stale unread lingers on a thread nobody is going to open. Warm
+// is different: Chris still wants to skim/audit it by eye later, so its per-conversation
+// unread pill is left alone — only the sound and the aggregate badge (already scoped by
+// category in getTotalUnread) are withheld.
+const AUTO_READ_CATEGORIES = new Set(['not_interested', 'follow_up']);
 
 // Deferred, category-aware new-message notification for when the AI is active. Called
-// AFTER the AI has classified a reply (see scheduleAiRouting), so cold replies are
-// handled silently: no imrcv sound and the orange unread badge is cleared. Warm/hot/etc.
-// fire the normal new-messages ping (sound + badge kept for human review). This is the
-// only place that intentionally clears unread for an AI-handled thread — the 2026-07-09
-// "AI never clears the badge" rule still holds for everything that isn't cold.
+// AFTER the AI has classified a reply (see scheduleAiRouting). This is the only place
+// that intentionally clears unread for an AI-handled thread — the 2026-07-09 "AI never
+// clears the badge" rule still holds for everything that should notify.
 function notifyAfterAiRouting(convId) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const fresh = db.getConversationById(convId);
-  const cat = fresh?.category || 'new';
-  if (AI_COLD_SILENT_CATEGORIES.has(cat)) {
-    try { db.markConversationRead(convId); } catch (_) {}
-    updateBadge();
-  } else {
+  if (shouldNotifyForConv(fresh)) {
     mainWindow.webContents.send('new-messages', { count: 1 });
+    return;
   }
+  if (fresh && AUTO_READ_CATEGORIES.has(fresh.category)) {
+    try { db.markConversationRead(convId); } catch (_) {}
+  }
+  updateBadge();
 }
 
 // ── AI Classification ────────────────────────────────────────────────────────
@@ -4671,6 +4683,9 @@ async function pollTwilio() {
     const safeMessages = messages.filter(m => twilio.normalizePhone(m.to) === myNumber);
 
     let newMessages = 0;
+    // Manual-mode (AI off) ping count — scoped by the same shouldNotifyForConv rule as
+    // the AI-active path, so warm/cold stay silent whether or not the AI is running.
+    let notifyMessages = 0;
     for (const msg of safeMessages) {
       // ── ISOLATION LAYER 3: per-message guard inside the loop ─────────────────
       // Redundant after Layer 2 but acts as a final independent hard stop.
@@ -4789,6 +4804,7 @@ async function pollTwilio() {
               });
               hfuFinish(armedRow, 'deal_gone');
               db.setHasNews(conv.id, true);
+              conv.has_news = true; // keep the in-memory row current for the notify check below
               log(`Hot follow-up STOPPED conv ${conv.id} — seller said "${deadPhrase}"`);
             }
           }
@@ -4801,6 +4817,11 @@ async function pollTwilio() {
           db.updateConversationCategory(conv.id, 'new');
           conv.category = 'new';
         }
+
+        // Manual-mode ping count. In AI-active mode this is superseded by the debounced
+        // per-conversation check in notifyAfterAiRouting; this only fires the batch ping
+        // used when the AI switch is off, where category won't be routed by the AI below.
+        if (shouldNotifyForConv(conv)) notifyMessages++;
 
         // Route this reply through the AI phase pipeline (no-op if AI switch is off —
         // in manual mode the message just stays unread for you to handle by hand).
@@ -4910,14 +4931,17 @@ async function pollTwilio() {
     db.saveSetting('lastPollAt', new Date().toISOString());
     updateBadge();
 
-    // When AI is active, DON'T ping here — we don't yet know if these replies are cold.
-    // The per-conversation notify (scheduleAiRouting → notifyAfterAiRouting) fires ~6s
-    // later once the AI has classified, pinging only for warm/hot/etc. and staying silent
-    // (no sound, no orange badge) for cold. When AI is off (manual mode) the batch ping is
-    // unchanged.
+    // When AI is active, DON'T ping here — we don't yet know what category a reply will
+    // land in. The per-conversation notify (scheduleAiRouting → notifyAfterAiRouting)
+    // fires ~6s later once the AI has classified, using the same shouldNotifyForConv rule.
+    // When AI is off (manual mode), category won't be routed automatically, so the batch
+    // ping below uses notifyMessages (pre-filtered above) instead of the raw newMessages.
     const aiActiveNow = settings.aiEnabled === 'true' && !!settings.claudeApiKey;
-    if (newMessages > 0 && !aiActiveNow && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('new-messages', { count: newMessages });
+    if (newMessages > 0 && notifyMessages < newMessages) {
+      log(`Poll: ${newMessages} new message(s), ${notifyMessages} notify-worthy (hot/news only) — ${newMessages - notifyMessages} silenced as warm/cold`);
+    }
+    if (notifyMessages > 0 && !aiActiveNow && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('new-messages', { count: notifyMessages });
     }
   } catch (e) {
     log('Poll error:', e.message);
