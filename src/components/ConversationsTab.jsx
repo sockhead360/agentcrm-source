@@ -100,6 +100,76 @@ function NewConversationModal({ onClose, onCreated }) {
   );
 }
 
+// Ctrl+click (or right-click) a thread to type the address in by hand. The AI can only
+// pull an address out of what the agent TEXTS — when they give it over the phone there's
+// nothing in the thread to extract, so this is the manual path onto the hot-lead row.
+function AddressModal({ conv, onClose, onSave }) {
+  const [address, setAddress] = useState(conv.address || '');
+  const [saving, setSaving] = useState(false);
+  const existing = (conv.address || '').trim();
+
+  const commit = async (value) => {
+    setSaving(true);
+    try { await onSave(value); }
+    catch (e) { setSaving(false); return; }
+    onClose();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(address.trim()); }
+    if (e.key === 'Escape') onClose();
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 400 }}>
+        <div className="modal-header">
+          <span className="modal-title">🏠 Property Address</span>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-group">
+            <label className="form-label">{conv.name || conv.phone}</label>
+            <input
+              className="form-input"
+              value={address}
+              onChange={e => setAddress(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="154 Cedar Cove Dr, Tampa FL"
+              autoFocus
+              onFocus={e => e.target.select()}
+            />
+            <div className="form-hint">
+              Shows on the row in the HOT / RED HOT groups so you can scan it without opening
+              the thread. Doesn't text anyone or submit a lead.
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          {existing && (
+            <button
+              className="btn btn-ghost"
+              style={{ marginRight: 'auto', color: '#aa1111' }}
+              onClick={() => commit('')}
+              disabled={saving}
+            >
+              Clear
+            </button>
+          )}
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => commit(address.trim())}
+            disabled={saving || !address.trim()}
+          >
+            {saving ? 'Saving...' : 'Save Address'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const CATEGORIES = {
   new:            { label: 'NEW',          color: 'var(--title-b)' },
   caliente:       { label: 'RED HOT 🌶️',   color: '#aa1111'        },
@@ -165,6 +235,7 @@ export default function ConversationsTab({ onReadUpdate }) {
   const [showNewConv, setShowNewConv] = useState(false);
   const [soundsMuted, setSoundsMuted] = useState(isMuted());
   const [emojiPicker, setEmojiPicker] = useState(null); // { convId, x, y }
+  const [addressEdit, setAddressEdit] = useState(null); // conversation being address-tagged
   const [searchQuery, setSearchQuery] = useState('');
   // Backend full-text search across message bodies (so an address sent mid-thread is
   // findable, not just the last message). ids = matching conv ids, snippets = the
@@ -287,7 +358,27 @@ export default function ConversationsTab({ onReadUpdate }) {
     });
   }, []);
 
+  // Ctrl+click on macOS fires `contextmenu` (and, depending on the surface, a click with
+  // ctrlKey set) — handle both so the address editor opens either way, and swallow the
+  // event so the row doesn't also get selected / the emoji picker doesn't also open.
+  const isAddressChord = (e) => e.ctrlKey || e.metaKey;
+
+  const openAddressEditor = (e, conv) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEmojiPicker(null);
+    setAddressEdit(conv);
+  };
+
+  const saveAddress = async (convId, address) => {
+    await window.api.setConversationAddress({ convId, address });
+    const next = address || null;
+    setConversations(prev => prev.map(c => c.id === convId ? { ...c, address: next } : c));
+    setSelected(prev => prev?.id === convId ? { ...prev, address: next } : prev);
+  };
+
   const handleEmojiIconClick = (e, convId) => {
+    if (isAddressChord(e)) return; // let the row's ctrl+click handler take it
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     setEmojiPicker({ convId, x: rect.right + 4, y: rect.top });
@@ -548,7 +639,9 @@ export default function ConversationsTab({ onReadUpdate }) {
                 <div
                   key={conv.id}
                   className={`buddy-item${selected?.id === conv.id ? ' active' : ''}`}
-                  onClick={() => handleSelect(conv)}
+                  onClick={e => isAddressChord(e) ? openAddressEditor(e, conv) : handleSelect(conv)}
+                  onContextMenu={e => openAddressEditor(e, conv)}
+                  title="Ctrl+click to set the property address"
                   style={{ cursor: 'pointer' }}
                 >
                   <span
@@ -627,8 +720,9 @@ export default function ConversationsTab({ onReadUpdate }) {
                       className={`buddy-item${selected?.id === conv.id ? ' active' : ''}`}
                       draggable
                       onDragStart={e => onDragStart(e, conv.id)}
-                      onClick={() => handleSelect(conv)}
-                      title="Drag to move to a different category"
+                      onClick={e => isAddressChord(e) ? openAddressEditor(e, conv) : handleSelect(conv)}
+                      onContextMenu={e => openAddressEditor(e, conv)}
+                      title="Drag to move to a different category · Ctrl+click to set the property address"
                       style={{ cursor: 'grab' }}
                     >
                       <span
@@ -675,7 +769,8 @@ export default function ConversationsTab({ onReadUpdate }) {
               <div className="chat-empty-icon">💬</div>
               <div className="chat-empty-text">Select a conversation</div>
               <div style={{ fontSize: 11, color: 'var(--win-dark)', marginTop: 4, fontFamily: 'var(--font-ui)' }}>
-                Drag contacts between groups · Click ▼ to collapse · N/W/C to hide New/Warm/Cold
+                Drag contacts between groups · Click ▼ to collapse · N/W/C to hide New/Warm/Cold<br />
+                Ctrl+click a thread to type in a property address
               </div>
               <button
                 className="btn btn-primary"
@@ -697,6 +792,14 @@ export default function ConversationsTab({ onReadUpdate }) {
             await loadConversations();
             setSelected(conv);
           }}
+        />
+      )}
+
+      {addressEdit && (
+        <AddressModal
+          conv={conversations.find(c => c.id === addressEdit.id) || addressEdit}
+          onClose={() => setAddressEdit(null)}
+          onSave={(address) => saveAddress(addressEdit.id, address)}
         />
       )}
 

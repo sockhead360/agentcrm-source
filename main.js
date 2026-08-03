@@ -2891,8 +2891,8 @@ async function classifyHotFollowUpReply(body, apiKey) {
     system:
       "A cash buyer sent a written offer on an off-market property and has been following up with the listing agent for a response. " +
       "Classify the agent's latest reply as exactly one word:\n\n" +
-      "answer — the reply conveys the SELLER'S POSITION on the offer: accepted, rejected, countered, a price reaction (\"too low\", \"they want more\", \"they're at 30\"), or any concrete decision or feedback from the seller. A rejection IS an answer.\n" +
-      "stall — the reply conveys NO seller position: a promise to present it, an apology, a delay, \"I'll let you know\", \"haven't heard back\", \"seller is out of town\", \"still waiting\", scheduling talk, or a question back at us. The agent is responsive but the seller has not weighed in yet.\n" +
+      "answer — Tier 1's question is settled. EITHER the agent confirms the offer HAS ALREADY REACHED the seller (past tense: \"yes I presented it\", \"they have it\", \"I sent it over\", \"yes but they're waiting on the family to agree\", \"they're reviewing it\") OR the reply conveys the SELLER'S POSITION: accepted, rejected, countered, a price reaction (\"too low\", \"they want more\", \"they're at 30\"). A rejection IS an answer. Confirmation of delivery alone IS an answer even when the seller has not decided yet, because there is nothing left to press for.\n" +
+      "stall — the offer is NOT yet confirmed in front of the seller and there is no seller position: a FUTURE promise to present it (\"I'll get it to them today\", \"I'll pass it along\"), \"haven't had a chance yet\", an apology, a delay, \"I'll let you know\" with no confirmation it was delivered, \"can't reach the seller\", scheduling talk, or a question back at us. The distinction from answer is tense: a promise to deliver is a stall, confirmation it was delivered is an answer.\n" +
       "dead — the property is no longer available to us at all: it sold, closed, went under contract with someone else and is gone, it went on the MLS / on market, or the SELLER PULLED IT — \"decided not to sell\", \"not selling anymore\", \"taking it off the market\", \"changed their mind\", \"pulled it\", \"they're keeping it\", \"renting it out instead\".\n\n" +
       "PRECEDENCE: dead beats answer. A seller withdrawing the property IS a seller position, but it also ends the deal, so it is dead, not answer. Ask first \"is this still a live off-market property we could buy?\" — if no, the verdict is dead no matter how the news was phrased.\n" +
       "IMPORTANT: \"under contract\", \"pending\", and \"contingent\" alone are NOT dead — those deals fall apart and we want the backup position. Classify them as answer.\n" +
@@ -4859,10 +4859,46 @@ async function pollTwilio() {
               db.setHasNews(conv.id, true);
               conv.has_news = true; // keep the in-memory row current for the notify check below
               log(`Hot follow-up STOPPED conv ${conv.id} — seller said "${deadPhrase}"`);
+
+            } else if (armedRow.hot_fu_state === 'press' && settings.claudeApiKey) {
+              // ── Tier 1 → Tier 2 handoff (Chris, 2026-08-03) ────────────────────
+              // Tier 1 exists to answer ONE question: is my offer in front of the seller?
+              // Once it is, pressing again asks something already settled — Devin Dooley
+              // confirmed delivery four minutes after press#1 and would have been asked
+              // "were you able to get my offer to the seller?" on resume.
+              //
+              // On `answer` the phase moves to maintain but the schedule is left due NOW
+              // rather than sent immediately: Chris's own reply pauses it (existing §8B
+              // behaviour), and because the phase already advanced, `hot_fu_paused_from`
+              // records 'maintain' — so Resume starts the generic heartbeat instead of
+              // re-opening the press. If he never replies, maintain simply carries the
+              // pulse on the colour cadence, which is the point: no thread goes quiet
+              // for weeks on its own.
+              //
+              // The classifier NEVER stops the agent. A `dead` verdict is treated exactly
+              // like a stall, because only an unambiguous phrase (hfuDeadPhrase, above) is
+              // allowed to end a chase — an LLM must not throw a live deal away.
+              const { verdict } = await classifyHotFollowUpReply(msg.body, settings.claudeApiKey);
+              if (verdict === 'answer') {
+                // next_at = now leaves the decision to the scheduler, which holds a
+                // colourless lead and flags it rather than guessing a cadence.
+                db.setHotFuState(conv.id, 'maintain', { hot_fu_next_at: Math.floor(Date.now() / 1000) });
+                db.setHasNews(conv.id, true);
+                conv.has_news = true;
+                db.logHotFollowUp({
+                  convId: conv.id, phase: 'press', library: '-', lineNo: 0,
+                  body: '[Tier 1 answered — offer confirmed with the seller, moving to Tier 2]',
+                  status: 'tier1_answered',
+                });
+                db.logAudit('hotfu_tier1_answered', { convId: conv.id, phone: msg.from });
+                log(`Hot follow-up conv ${conv.id}: Tier 1 answered → maintain (Tier 2)`);
+              } else {
+                log(`Hot follow-up conv ${conv.id}: reply graded '${verdict}' — staying in Tier 1 press`);
+              }
             }
           }
         } catch (hfuErr) {
-          log(`Hot follow-up dead-phrase check failed on conv ${conv.id}: ${hfuErr.message}`);
+          log(`Hot follow-up inbound check failed on conv ${conv.id}: ${hfuErr.message}`);
         }
 
         // Whitelisted test numbers always reset to 'new' so they can be re-tested repeatedly
@@ -5655,6 +5691,18 @@ ipcMain.handle('conversations:getTotalUnread', () => db.getTotalUnread());
 
 ipcMain.handle('conversations:setEmoji', (_, { convId, emoji }) => {
   db.setConversationEmoji(convId, emoji);
+  return true;
+});
+
+// Manual address entry (Chris, 2026-08-03): the AI only ever sets conversations.address
+// from what the agent TEXTS (autoSubmitLead → extractLeadDetails). When an agent gives the
+// address over the PHONE there's nothing in the thread to extract, so the hot-lead row has
+// no address to scan. Ctrl+click a thread in the buddy list to type it in by hand.
+// Purely the display/scan field — does not create a lead submission or notify anyone.
+ipcMain.handle('conversations:setAddress', (_, { convId, address }) => {
+  const clean = (address || '').trim() || null;
+  db.setConversationAddress(convId, clean);
+  db.logAudit('manual_address_set', { convId, address: clean });
   return true;
 });
 
