@@ -562,8 +562,29 @@ function createCampaign(name, message, listIds) {
   return campaignId;
 }
 
+// Blast-eligibility rule (Chris, 2026-08-03): a re-blast must never touch anyone
+// currently mid-pipeline — new/warm/hot/RED HOT — regardless of whether they've ever
+// replied before. Cold (not_interested/follow_up) and true never-repliers ARE the
+// re-hit target: "the money is in re-hitting lists." This replaces the old blanket
+// rule where any past reply, even a cold "no" from months ago, permanently blocked a
+// phone via excluded_phones — stricter than intended for a deliberate list re-hit.
+// STOP numbers are excluded separately below and are never affected by this.
+const BLAST_PROTECTED_CATEGORIES = ['new', 'warm', 'hot_lead', 'caliente'];
+
+function isPhoneInActiveConversation(phone) {
+  if (!phone) return false;
+  const placeholders = BLAST_PROTECTED_CATEGORIES.map(() => '?').join(',');
+  return !!db.prepare(`
+    SELECT 1 FROM conversations cv
+    JOIN contacts co ON co.id = cv.contact_id
+    WHERE co.phone = ?
+    AND COALESCE(cv.archived, 0) = 0
+    AND cv.category IN (${placeholders})
+  `).get(phone, ...BLAST_PROTECTED_CATEGORIES);
+}
+
 function getCampaignContacts(campaignId) {
-  return db.prepare(`
+  const candidates = db.prepare(`
     SELECT c.*, cc.status as blast_status, cc.id as cc_id
     FROM contacts c
     JOIN campaign_lists cl ON cl.list_id = c.list_id
@@ -573,13 +594,17 @@ function getCampaignContacts(campaignId) {
       c.phone IN (SELECT phone FROM whitelisted_phones)
       OR (
         c.status NOT IN ('excluded', 'blasted')
-        AND (c.phone IS NULL OR c.phone NOT IN (SELECT phone FROM excluded_phones))
         AND (c.phone IS NULL OR c.phone NOT IN (SELECT phone FROM stopped_numbers))
       )
     )
     AND (cc.status IS NULL OR cc.status = 'pending')
     ORDER BY c.id ASC
   `).all(campaignId, campaignId);
+
+  // Whitelisted test numbers bypass every gate, same as before every other check here.
+  // Everyone else is additionally blocked only while they're in an active pipeline
+  // conversation — see isPhoneInActiveConversation / BLAST_PROTECTED_CATEGORIES above.
+  return candidates.filter(c => isPhoneWhitelisted(c.phone) || !isPhoneInActiveConversation(c.phone));
 }
 
 function addStoppedNumber(phone) {
@@ -703,8 +728,9 @@ function getCampaignBlastPreview(campaignId) {
     if (seenPhones.has(n)) { dedupCount++; continue; }
     seenPhones.add(n);
     const isStopped = !!db.prepare('SELECT 1 FROM stopped_numbers WHERE phone = ?').get(n);
-    const isExcluded = !!db.prepare('SELECT 1 FROM excluded_phones WHERE phone = ?').get(n);
-    if (isStopped || isExcluded) blockedCount++;
+    // Matches getCampaignContacts: blocked only for an active pipeline conversation
+    // (new/warm/hot/RED HOT) now, not for any past reply — see BLAST_PROTECTED_CATEGORIES.
+    if (isStopped || isPhoneInActiveConversation(n)) blockedCount++;
   }
 
   const eligibleContacts = getCampaignContacts(campaignId);
